@@ -325,3 +325,17 @@ app.listen(PORT, () => {
 ╚═══════════════════════════════════════╝
     `);
 });
+// Ruta raíz
+app.get('/', (req, res) => {
+    res.json({
+        service: 'Andreani Service API',
+        version: '1.0.0',
+        endpoints: {
+            health: 'GET /health',
+            login: 'POST /login',
+            cotizar: 'POST /cotizar',
+            refresh: 'POST /refresh-token'
+        },
+        status: 'running'
+    });
+});
