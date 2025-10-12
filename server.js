@@ -1,18 +1,20 @@
 /**
  * Microservicio Node.js para Andreani PyMEs
  * Maneja login OAuth2 + WebSocket SignalR
+ * OPTIMIZADO PARA RAILWAY con puppeteer-core
  * 
  * INSTALACIÓN:
  * 1. Crear carpeta: mkdir andreani-service && cd andreani-service
  * 2. npm init -y
- * 3. npm install express @microsoft/signalr puppeteer dotenv cors
+ * 3. npm install express @microsoft/signalr puppeteer-core chrome-aws-lambda dotenv cors
  * 4. Crear archivo .env con credenciales
  * 5. node server.js
  */
 
 const express = require('express');
 const { HubConnectionBuilder, HttpTransportType } = require('@microsoft/signalr');
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer-core');
+const chromium = require('chrome-aws-lambda');
 const cors = require('cors');
 require('dotenv').config();
 
@@ -35,8 +37,10 @@ async function loginAndreani(username, password) {
     console.log('🔐 Iniciando login con Puppeteer...');
     
     const browser = await puppeteer.launch({
-        headless: 'new',
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+        args: chromium.args,
+        defaultViewport: chromium.defaultViewport,
+        executablePath: await chromium.executablePath,
+        headless: chromium.headless,
     });
     
     try {
