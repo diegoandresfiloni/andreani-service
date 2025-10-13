@@ -27,16 +27,24 @@ let tokenCache = {
 async function cotizarEnvio(accessToken, params) {
     const hubUrl = `https://pymes-api.andreani.com/hubCotizacion?access_token=${accessToken}`;
     
+    console.log('🔗 Conectando a:', hubUrl);
+    console.log('📦 Params:', JSON.stringify(params, null, 2));
+    
     const connection = new HubConnectionBuilder()
         .withUrl(hubUrl, {
             skipNegotiation: true,
-            transport: HttpTransportType.WebSockets
+            transport: HttpTransportType.WebSockets,
+            headers: {
+                'Authorization': `Bearer ${accessToken}`
+            }
         })
+        .withAutomaticReconnect()
         .build();
     
     try {
+        console.log('🔌 Intentando conectar al WebSocket...');
         await connection.start();
-        console.log('🔌 Conectado al WebSocket');
+        console.log('✅ Conectado al WebSocket exitosamente');
         
         const cotizacionData = {
             usuarioId: params.usuarioId || '',
@@ -50,16 +58,28 @@ async function cotizarEnvio(accessToken, params) {
             cotizacionData.destinatario = params.destinatario;
         }
         
-        console.log('📤 Enviando a Andreani...');
+        console.log('📤 Invocando método Cotizar con:', JSON.stringify(cotizacionData, null, 2));
+        
         const result = await connection.invoke('Cotizar', cotizacionData);
-        console.log('📥 Respuesta recibida');
+        
+        console.log('📥 Respuesta recibida:', JSON.stringify(result, null, 2));
         
         await connection.stop();
         return result;
         
     } catch (error) {
-        console.error('❌ Error en WebSocket:', error.message);
-        await connection.stop();
+        console.error('❌ Error detallado:', {
+            message: error.message,
+            stack: error.stack,
+            name: error.name
+        });
+        
+        try {
+            await connection.stop();
+        } catch (e) {
+            // Ignorar error al cerrar
+        }
+        
         throw error;
     }
 }
