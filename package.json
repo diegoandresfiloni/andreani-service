@@ -1,16 +1,15 @@
 {
     "name": "andreani-service",
-    "version": "2.0.0",
-    "description": "Microservicio para Andreani PyMés - Simplificado",
+    "version": "3.0.0",
+    "description": "Microservicio para Andreani PyMés - API REST",
     "main": "server.js",
     "scripts": {
       "start": "node server.js"
     },
     "dependencies": {
       "express": "^4.18.2",
-      "@microsoft/signalr": "^8.0.0",
-      "dotenv": "^16.3.1",
-      "cors": "^2.8.5"
+      "cors": "^2.8.5",
+      "dotenv": "^16.3.1"
     },
     "engines": {
       "node": ">=18.0.0"
