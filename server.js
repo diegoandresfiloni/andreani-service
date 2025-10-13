@@ -1,10 +1,9 @@
 /**
  * Microservicio Node.js para Andreani PyMés
- * Versión SIMPLIFICADA - Token manual
+ * Usando API REST pública - SIN WebSocket, SIN autenticación
  */
 
 const express = require('express');
-const { HubConnectionBuilder, HttpTransportType } = require('@microsoft/signalr');
 const cors = require('cors');
 require('dotenv').config();
 
@@ -14,75 +13,68 @@ app.use(cors());
 
 const PORT = process.env.PORT || 3000;
 
-// Cache simple de token (un solo usuario por ahora)
-let tokenCache = {
-    access_token: null,
-    expires_at: null,
-    username: null
-};
-
 /**
- * Cotiza envío usando SignalR
+ * Cotiza envío usando la API REST pública
  */
-async function cotizarEnvio(accessToken, params) {
-    console.log('🔑 Token recibido (primeros 50 chars):', accessToken.substring(0, 50));
-    console.log('📏 Longitud del token:', accessToken.length);
+async function cotizarEnvio(params) {
+    const apiUrl = 'https://cotizador-api.andreani.com/api/v1/Cotizar';
     
-    // Enviar token en la URL y saltar negociación
-    const hubUrl = `https://pymes-api.andreani.com/hubCotizacion?access_token=${accessToken}`;
+    const requestData = {
+        usuarioId: null, // API pública no necesita usuario
+        tipoDeEnvioId: params.tipoDeEnvioId,
+        codigoPostalOrigen: params.codigoPostalOrigen || params.sucursalOrigen,
+        codigoPostalDestino: params.codigoPostalDestino,
+        bultos: params.bultos.map(bulto => ({
+            itemId: generateGuid(),
+            altoCm: bulto.altoCm.toString(),
+            anchoCm: bulto.anchoCm.toString(),
+            largoCm: bulto.largoCm.toString(),
+            peso: (bulto.peso / 1000).toString(), // Convertir gramos a kg
+            unidad: 'kg',
+            valorDeclarado: bulto.valorDeclarado.toString()
+        }))
+    };
     
-    console.log('🔗 Conectando a SignalR...');
-    console.log('📦 Params:', JSON.stringify(params, null, 2));
-    
-    const connection = new HubConnectionBuilder()
-        .withUrl(hubUrl, {
-            skipNegotiation: true,
-            transport: HttpTransportType.WebSockets
-        })
-        .build();
+    console.log('📤 Enviando a Andreani API REST...');
+    console.log('URL:', apiUrl);
+    console.log('Request:', JSON.stringify(requestData, null, 2));
     
     try {
-        console.log('🔌 Intentando conectar al WebSocket...');
-        await connection.start();
-        console.log('✅ Conectado al WebSocket exitosamente');
+        const response = await fetch(apiUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            },
+            body: JSON.stringify(requestData)
+        });
         
-        const cotizacionData = {
-            usuarioId: params.usuarioId || '',
-            tipoDeEnvioId: params.tipoDeEnvioId,
-            sucursalOrigen: params.sucursalOrigen,
-            codigoPostalDestino: params.codigoPostalDestino,
-            bultos: params.bultos
-        };
-        
-        if (params.destinatario) {
-            cotizacionData.destinatario = params.destinatario;
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         }
         
-        console.log('📤 Invocando método Cotizar...');
+        const result = await response.json();
         
-        const result = await connection.invoke('Cotizar', cotizacionData);
+        console.log('📥 Respuesta recibida de Andreani');
+        console.log('Tarifas:', JSON.stringify(result, null, 2));
         
-        console.log('📥 ¡Respuesta exitosa de Andreani!');
-        console.log('Resultado:', JSON.stringify(result, null, 2));
-        
-        await connection.stop();
         return result;
         
     } catch (error) {
-        console.error('❌ Error detallado:', {
-            message: error.message,
-            stack: error.stack,
-            name: error.name
-        });
-        
-        try {
-            await connection.stop();
-        } catch (e) {
-            // Ignorar error al cerrar
-        }
-        
+        console.error('❌ Error en cotización:', error.message);
         throw error;
     }
+}
+
+/**
+ * Genera un GUID para itemId
+ */
+function generateGuid() {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+        const r = Math.random() * 16 | 0;
+        const v = c === 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+    });
 }
 
 // ============================================
@@ -90,49 +82,14 @@ async function cotizarEnvio(accessToken, params) {
 // ============================================
 
 /**
- * POST /set-token
- * Guarda el token en cache
- */
-app.post('/set-token', (req, res) => {
-    try {
-        const { username, access_token, expires_in } = req.body;
-        
-        if (!access_token) {
-            return res.status(400).json({ 
-                success: false,
-                error: 'access_token requerido' 
-            });
-        }
-        
-        tokenCache = {
-            access_token: access_token,
-            expires_at: Date.now() + ((expires_in || 5400) * 1000),
-            username: username
-        };
-        
-        console.log('💾 Token guardado en cache');
-        
-        res.json({
-            success: true,
-            message: 'Token guardado correctamente',
-            expires_in: expires_in || 5400
-        });
-        
-    } catch (error) {
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
-    }
-});
-
-/**
  * POST /cotizar
- * Cotiza un envío
+ * Cotiza un envío usando la API REST pública
  */
 app.post('/cotizar', async (req, res) => {
     try {
-        const { token, params } = req.body;
+        const { params } = req.body;
+        
+        console.log('🔍 Request recibido en /cotizar');
         
         if (!params) {
             return res.status(400).json({ 
@@ -141,37 +98,10 @@ app.post('/cotizar', async (req, res) => {
             });
         }
         
-        // Usar token del request o del cache
-        let accessToken = token || tokenCache.access_token;
+        console.log('✅ Cotizando con API REST pública...');
         
-        if (!accessToken) {
-            return res.status(401).json({
-                success: false,
-                error: 'TOKEN_REQUIRED',
-                message: 'No hay token disponible. Enviá el token en el request.'
-            });
-        }
-        
-        // Verificar si está expirado (solo si es del cache)
-        if (!token && tokenCache.expires_at && tokenCache.expires_at < Date.now()) {
-            console.log('⚠️ Token en cache expirado');
-            return res.status(401).json({
-                success: false,
-                error: 'TOKEN_EXPIRED',
-                message: 'El token en cache expiró. Enviá un token fresco.'
-            });
-        }
-        
-        console.log('✅ Token disponible, cotizando...');
-        
-        // Si vino un token nuevo en el request, guardarlo
-        if (token) {
-            tokenCache.access_token = token;
-            tokenCache.expires_at = Date.now() + (5400 * 1000);
-        }
-        
-        // Cotizar
-        const result = await cotizarEnvio(accessToken, params);
+        // Cotizar usando API REST
+        const result = await cotizarEnvio(params);
         
         res.json({
             success: true,
@@ -180,17 +110,6 @@ app.post('/cotizar', async (req, res) => {
         
     } catch (error) {
         console.error('❌ Error en cotización:', error.message);
-        
-        // Si es error de autenticación, limpiar cache
-        if (error.message.includes('401') || error.message.includes('Unauthorized')) {
-            tokenCache = { access_token: null, expires_at: null, username: null };
-            return res.status(401).json({
-                success: false,
-                error: 'TOKEN_INVALID',
-                message: 'Token inválido o expirado'
-            });
-        }
-        
         res.status(500).json({
             success: false,
             error: error.message
@@ -202,15 +121,10 @@ app.post('/cotizar', async (req, res) => {
  * GET /health
  */
 app.get('/health', (req, res) => {
-    const hasToken = !!tokenCache.access_token;
-    const isExpired = tokenCache.expires_at ? tokenCache.expires_at < Date.now() : true;
-    
     res.json({
         status: 'ok',
         uptime: process.uptime(),
-        token_cached: hasToken,
-        token_expired: isExpired,
-        token_expires_in: tokenCache.expires_at ? Math.floor((tokenCache.expires_at - Date.now()) / 1000) : 0
+        api: 'REST pública - Sin autenticación'
     });
 });
 
@@ -218,13 +132,13 @@ app.get('/health', (req, res) => {
 app.get('/', (req, res) => {
     res.json({
         service: 'Andreani Service API',
-        version: '2.0.0 - Simplified',
+        version: '3.0.0 - REST API pública',
         endpoints: {
             health: 'GET /health',
-            set_token: 'POST /set-token',
             cotizar: 'POST /cotizar'
         },
-        status: 'running'
+        status: 'running',
+        note: 'Usando API REST pública de Andreani - Sin WebSocket ni autenticación'
     });
 });
 
@@ -234,7 +148,7 @@ app.listen(PORT, () => {
 ╔═══════════════════════════════════════╗
 ║   🚀 Andreani Service RUNNING         ║
 ║   📡 Port: ${PORT}                       ║
-║   ✅ Sin Puppeteer - 100% estable     ║
+║   ✅ API REST pública - 100% estable  ║
 ╚═══════════════════════════════════════╝
     `);
 });
