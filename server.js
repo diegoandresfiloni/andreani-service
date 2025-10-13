@@ -28,18 +28,17 @@ async function cotizarEnvio(accessToken, params) {
     console.log('🔑 Token recibido (primeros 50 chars):', accessToken.substring(0, 50));
     console.log('📏 Longitud del token:', accessToken.length);
     
-    // NO enviar token en la URL, usar accessTokenFactory
-    const hubUrl = `https://pymes-api.andreani.com/hubCotizacion`;
+    // Enviar token en la URL y saltar negociación
+    const hubUrl = `https://pymes-api.andreani.com/hubCotizacion?access_token=${accessToken}`;
     
     console.log('🔗 Conectando a SignalR...');
     console.log('📦 Params:', JSON.stringify(params, null, 2));
     
     const connection = new HubConnectionBuilder()
         .withUrl(hubUrl, {
-            accessTokenFactory: () => accessToken,
+            skipNegotiation: true,
             transport: HttpTransportType.WebSockets
         })
-        .withAutomaticReconnect()
         .build();
     
     try {
