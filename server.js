@@ -25,9 +25,12 @@ let tokenCache = {
  * Cotiza envío usando SignalR
  */
 async function cotizarEnvio(accessToken, params) {
+    console.log('🔑 Token recibido (primeros 50 chars):', accessToken.substring(0, 50));
+    console.log('📏 Longitud del token:', accessToken.length);
+    
     const hubUrl = `https://pymes-api.andreani.com/hubCotizacion?access_token=${accessToken}`;
     
-    console.log('🔗 Conectando a:', hubUrl);
+    console.log('🔗 Conectando a SignalR...');
     console.log('📦 Params:', JSON.stringify(params, null, 2));
     
     const connection = new HubConnectionBuilder()
