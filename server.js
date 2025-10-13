@@ -32,11 +32,8 @@ async function cotizarEnvio(accessToken, params) {
     
     const connection = new HubConnectionBuilder()
         .withUrl(hubUrl, {
-            skipNegotiation: true,
-            transport: HttpTransportType.WebSockets,
-            headers: {
-                'Authorization': `Bearer ${accessToken}`
-            }
+            skipNegotiation: false, // Cambiar a false para negociar
+            transport: HttpTransportType.WebSockets
         })
         .withAutomaticReconnect()
         .build();
