@@ -22,7 +22,7 @@ async function cotizarEnvio(params) {
     const requestData = {
         usuarioId: null, // API pública no necesita usuario
         tipoDeEnvioId: params.tipoDeEnvioId,
-        codigoPostalOrigen: params.codigoPostalOrigen || params.sucursalOrigen,
+        codigoPostalOrigen: params.codigoPostalOrigen || params.cp_origen || params.sucursalOrigen || '8000',
         codigoPostalDestino: params.codigoPostalDestino,
         bultos: params.bultos.map(bulto => ({
             itemId: generateGuid(),
