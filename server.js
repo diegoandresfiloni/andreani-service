@@ -28,14 +28,15 @@ async function cotizarEnvio(accessToken, params) {
     console.log('🔑 Token recibido (primeros 50 chars):', accessToken.substring(0, 50));
     console.log('📏 Longitud del token:', accessToken.length);
     
-    const hubUrl = `https://pymes-api.andreani.com/hubCotizacion?access_token=${accessToken}`;
+    // NO enviar token en la URL, usar accessTokenFactory
+    const hubUrl = `https://pymes-api.andreani.com/hubCotizacion`;
     
     console.log('🔗 Conectando a SignalR...');
     console.log('📦 Params:', JSON.stringify(params, null, 2));
     
     const connection = new HubConnectionBuilder()
         .withUrl(hubUrl, {
-            skipNegotiation: false, // Cambiar a false para negociar
+            accessTokenFactory: () => accessToken,
             transport: HttpTransportType.WebSockets
         })
         .withAutomaticReconnect()
@@ -58,11 +59,12 @@ async function cotizarEnvio(accessToken, params) {
             cotizacionData.destinatario = params.destinatario;
         }
         
-        console.log('📤 Invocando método Cotizar con:', JSON.stringify(cotizacionData, null, 2));
+        console.log('📤 Invocando método Cotizar...');
         
         const result = await connection.invoke('Cotizar', cotizacionData);
         
-        console.log('📥 Respuesta recibida:', JSON.stringify(result, null, 2));
+        console.log('📥 ¡Respuesta exitosa de Andreani!');
+        console.log('Resultado:', JSON.stringify(result, null, 2));
         
         await connection.stop();
         return result;
