@@ -44,7 +44,10 @@ async function cotizarEnvio(params) {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'Accept': 'application/json'
+                'Accept': 'application/json',
+                'xapikey': 'TEST_XqPMiwXzTRKHH0mF3gmtPtQt3LNGIuqCTdgaUHINMdmlaFid0x9MzlYTKXPxluYQ',
+                'Origin': 'https://pymes.andreani.com',
+                'Referer': 'https://pymes.andreani.com/cotizador'
             },
             body: JSON.stringify(requestData)
         });
