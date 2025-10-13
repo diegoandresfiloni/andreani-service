@@ -1,20 +1,20 @@
 {
-  "name": "andreani-service",
-  "version": "1.0.0",
-  "description": "Microservicio para Andreani PyMés",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  },
-  "dependencies": {
-    "express": "^4.18.2",
-    "@microsoft/signalr": "^8.0.0",
-    "chrome-aws-lambda": "^10.1.0",
-    "puppeteer-core": "^10.1.0",
-    "dotenv": "^16.3.1",
-    "cors": "^2.8.5"
-  },
-  "engines": {
-    "node": "14.x"
+    "name": "andreani-service",
+    "version": "1.0.0",
+    "description": "Microservicio para Andreani PyMés",
+    "main": "server.js",
+    "scripts": {
+      "start": "node server.js"
+    },
+    "dependencies": {
+      "express": "^4.18.2",
+      "@microsoft/signalr": "^8.0.0",
+      "@sparticuz/chromium": "^119.0.0",
+      "puppeteer-core": "^21.5.0",
+      "dotenv": "^16.3.1",
+      "cors": "^2.8.5"
+    },
+    "engines": {
+      "node": ">=18.0.0"
+    }
   }
-}
