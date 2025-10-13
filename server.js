@@ -2,13 +2,6 @@
  * Microservicio Node.js para Andreani PyMEs
  * Maneja login OAuth2 + WebSocket SignalR
  * OPTIMIZADO PARA RAILWAY con puppeteer-core
- * 
- * INSTALACIÓN:
- * 1. Crear carpeta: mkdir andreani-service && cd andreani-service
- * 2. npm init -y
- * 3. npm install express @microsoft/signalr puppeteer-core chrome-aws-lambda dotenv cors
- * 4. Crear archivo .env con credenciales
- * 5. node server.js
  */
 
 const express = require('express');
@@ -91,7 +84,7 @@ async function loginAndreani(username, password) {
         await page.waitForSelector('input[type="password"], input[name="password"]', { timeout: 10000 });
         await page.type('input[type="password"], input[name="password"]', password, { delay: 100 });
         
-        console.log('✍️ Credenciales ingresadas, haciendo clic en login...');
+        console.log('✏️ Credenciales ingresadas, haciendo clic en login...');
         
         // Click en botón de login
         await page.click('button[type="submit"], button#next');
@@ -190,21 +183,36 @@ async function cotizarEnvio(accessToken, params) {
     try {
         await connection.start();
         console.log('🔌 Conectado al WebSocket');
+        console.log('📦 Parámetros recibidos:', JSON.stringify(params, null, 2));
         
-        // Invocar método de cotización
-        const result = await connection.invoke('Cotizar', {
+        // Preparar objeto de cotización con todos los datos
+        const cotizacionData = {
             usuarioId: params.usuarioId || '',
             tipoDeEnvioId: params.tipoDeEnvioId,
             sucursalOrigen: params.sucursalOrigen,
             codigoPostalDestino: params.codigoPostalDestino,
             bultos: params.bultos
-        });
+        };
+        
+        // Agregar datos del destinatario si están presentes
+        if (params.destinatario) {
+            cotizacionData.destinatario = params.destinatario;
+            console.log('👤 Datos del destinatario incluidos:', params.destinatario);
+        }
+        
+        console.log('📤 Enviando a Andreani:', JSON.stringify(cotizacionData, null, 2));
+        
+        // Invocar método de cotización
+        const result = await connection.invoke('Cotizar', cotizacionData);
+        
+        console.log('📥 Respuesta de Andreani:', JSON.stringify(result, null, 2));
         
         await connection.stop();
         
         return result;
         
     } catch (error) {
+        console.error('❌ Error en WebSocket:', error);
         await connection.stop();
         throw error;
     }
@@ -251,8 +259,22 @@ app.post('/cotizar', async (req, res) => {
     try {
         const { username, password, params } = req.body;
         
+        console.log('🔍 Request recibido en /cotizar');
+        console.log('Username:', username);
+        console.log('Params:', JSON.stringify(params, null, 2));
+        
         if (!username || !password) {
-            return res.status(400).json({ error: 'Credenciales requeridas' });
+            return res.status(400).json({ 
+                success: false,
+                error: 'Credenciales requeridas' 
+            });
+        }
+        
+        if (!params) {
+            return res.status(400).json({ 
+                success: false,
+                error: 'Parámetros de cotización requeridos' 
+            });
         }
         
         // Obtener token
@@ -268,9 +290,11 @@ app.post('/cotizar', async (req, res) => {
         
     } catch (error) {
         console.error('❌ Error en cotización:', error.message);
+        console.error('Stack:', error.stack);
         res.status(500).json({
             success: false,
-            error: error.message
+            error: error.message,
+            details: error.stack
         });
     }
 });
@@ -315,16 +339,6 @@ app.post('/refresh-token', async (req, res) => {
     }
 });
 
-// Iniciar servidor
-app.listen(PORT, () => {
-    console.log(`
-╔═══════════════════════════════════════╗
-║   🚀 Andreani Service RUNNING         ║
-║   📡 Port: ${PORT}                       ║
-║   🔗 http://localhost:${PORT}           ║
-╚═══════════════════════════════════════╝
-    `);
-});
 // Ruta raíz
 app.get('/', (req, res) => {
     res.json({
@@ -338,4 +352,15 @@ app.get('/', (req, res) => {
         },
         status: 'running'
     });
+});
+
+// Iniciar servidor
+app.listen(PORT, () => {
+    console.log(`
+╔═══════════════════════════════════════╗
+║   🚀 Andreani Service RUNNING         ║
+║   📡 Port: ${PORT}                       ║
+║   🔗 http://localhost:${PORT}           ║
+╚═══════════════════════════════════════╝
+    `);
 });
