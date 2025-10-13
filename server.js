@@ -1,13 +1,10 @@
 /**
  * Microservicio Node.js para Andreani PyMés
- * Maneja login OAuth2 + WebSocket SignalR
- * OPTIMIZADO PARA RAILWAY
+ * Versión SIMPLIFICADA - Token manual
  */
 
 const express = require('express');
 const { HubConnectionBuilder, HttpTransportType } = require('@microsoft/signalr');
-const puppeteer = require('puppeteer-core');
-const chromium = require('@sparticuz/chromium');
 const cors = require('cors');
 require('dotenv').config();
 
@@ -17,172 +14,12 @@ app.use(cors());
 
 const PORT = process.env.PORT || 3000;
 
-// Cache de tokens
+// Cache simple de token (un solo usuario por ahora)
 let tokenCache = {
     access_token: null,
-    expires_at: null
+    expires_at: null,
+    username: null
 };
-
-/**
- * Login con Puppeteer (navegador headless)
- */
-async function loginAndreani(username, password) {
-    console.log('🔐 Iniciando login con Puppeteer...');
-    
-    let browser = null;
-    
-    try {
-        // Configurar Chromium para Railway
-        const executablePath = await chromium.executablePath();
-        
-        console.log('📍 Chromium path:', executablePath);
-        
-        // Lanzar browser
-        browser = await puppeteer.launch({
-            args: chromium.args,
-            defaultViewport: chromium.defaultViewport,
-            executablePath: executablePath,
-            headless: chromium.headless,
-        });
-        
-        console.log('✅ Browser iniciado correctamente');
-        
-        const page = await browser.newPage();
-        
-        // Interceptar requests para capturar el token
-        let accessToken = null;
-        
-        page.on('request', request => {
-            const url = request.url();
-            if (url.includes('access_token=')) {
-                const match = url.match(/access_token=([^&]+)/);
-                if (match) {
-                    accessToken = match[1];
-                    console.log('🎯 Token capturado en request');
-                }
-            }
-        });
-        
-        page.on('response', async response => {
-            const url = response.url();
-            if (url.includes('token') || url.includes('authorize')) {
-                try {
-                    const headers = response.headers();
-                    if (headers['authorization']) {
-                        const authHeader = headers['authorization'];
-                        if (authHeader.startsWith('Bearer ')) {
-                            accessToken = authHeader.substring(7);
-                            console.log('🎯 Token capturado en response header');
-                        }
-                    }
-                } catch (e) {
-                    // Ignorar errores
-                }
-            }
-        });
-        
-        // Ir a la página de login
-        console.log('📄 Navegando a página de login...');
-        await page.goto('https://onboarding.andreani.com/', {
-            waitUntil: 'networkidle2',
-            timeout: 60000
-        });
-        
-        console.log('✅ Página cargada, buscando formulario de login...');
-        
-        // Esperar y completar formulario
-        await page.waitForSelector('input[type="email"], input[name="signInName"]', { timeout: 30000 });
-        await page.type('input[type="email"], input[name="signInName"]', username, { delay: 100 });
-        
-        await page.waitForSelector('input[type="password"], input[name="password"]', { timeout: 10000 });
-        await page.type('input[type="password"], input[name="password"]', password, { delay: 100 });
-        
-        console.log('✏️ Credenciales ingresadas, haciendo clic en login...');
-        
-        // Click en botón de login
-        await page.click('button[type="submit"], button#next');
-        
-        // Esperar redirección
-        await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 });
-        
-        console.log('✅ Login exitoso, esperando token...');
-        
-        // Esperar un poco más para asegurar que el token se capture
-        await page.waitForTimeout(3000);
-        
-        // Si no capturamos el token en las requests, intentar obtenerlo del localStorage
-        if (!accessToken) {
-            console.log('🔍 Buscando token en localStorage...');
-            accessToken = await page.evaluate(() => {
-                // Buscar en localStorage
-                for (let i = 0; i < localStorage.length; i++) {
-                    const key = localStorage.key(i);
-                    const value = localStorage.getItem(key);
-                    if (value && value.includes('eyJ')) {
-                        try {
-                            const parsed = JSON.parse(value);
-                            if (parsed.access_token || parsed.accessToken) {
-                                return parsed.access_token || parsed.accessToken;
-                            }
-                        } catch (e) {
-                            if (value.startsWith('eyJ')) {
-                                return value;
-                            }
-                        }
-                    }
-                }
-                
-                // Buscar en cookies
-                const cookies = document.cookie.split(';');
-                for (let cookie of cookies) {
-                    const [name, value] = cookie.trim().split('=');
-                    if (value && value.startsWith('eyJ')) {
-                        return value;
-                    }
-                }
-                
-                return null;
-            });
-        }
-        
-        await browser.close();
-        browser = null;
-        
-        if (!accessToken) {
-            throw new Error('No se pudo obtener el access token');
-        }
-        
-        console.log('🎉 Token obtenido exitosamente');
-        
-        // Guardar en cache (válido por 1.5 horas)
-        tokenCache.access_token = accessToken;
-        tokenCache.expires_at = Date.now() + (90 * 60 * 1000); // 90 minutos
-        
-        return accessToken;
-        
-    } catch (error) {
-        console.error('❌ Error en loginAndreani:', error.message);
-        if (browser) {
-            await browser.close();
-        }
-        throw error;
-    }
-}
-
-/**
- * Obtiene token (desde cache o haciendo login)
- */
-async function getAccessToken(username, password) {
-    // Si hay token válido en cache, usarlo
-    if (tokenCache.access_token && tokenCache.expires_at > Date.now()) {
-        console.log('✅ Usando token desde cache');
-        return tokenCache.access_token;
-    }
-    
-    // Token expirado o no existe, hacer login
-    console.log('🔄 Token expirado, renovando...');
-    return await loginAndreani(username, password);
-}
 
 /**
  * Cotiza envío usando SignalR
@@ -200,9 +37,7 @@ async function cotizarEnvio(accessToken, params) {
     try {
         await connection.start();
         console.log('🔌 Conectado al WebSocket');
-        console.log('📦 Parámetros recibidos:', JSON.stringify(params, null, 2));
         
-        // Preparar objeto de cotización con todos los datos
         const cotizacionData = {
             usuarioId: params.usuarioId || '',
             tipoDeEnvioId: params.tipoDeEnvioId,
@@ -211,25 +46,19 @@ async function cotizarEnvio(accessToken, params) {
             bultos: params.bultos
         };
         
-        // Agregar datos del destinatario si están presentes
         if (params.destinatario) {
             cotizacionData.destinatario = params.destinatario;
-            console.log('👤 Datos del destinatario incluidos:', params.destinatario);
         }
         
-        console.log('📤 Enviando a Andreani:', JSON.stringify(cotizacionData, null, 2));
-        
-        // Invocar método de cotización
+        console.log('📤 Enviando a Andreani...');
         const result = await connection.invoke('Cotizar', cotizacionData);
-        
-        console.log('📥 Respuesta de Andreani:', JSON.stringify(result, null, 2));
+        console.log('📥 Respuesta recibida');
         
         await connection.stop();
-        
         return result;
         
     } catch (error) {
-        console.error('❌ Error en WebSocket:', error);
+        console.error('❌ Error en WebSocket:', error.message);
         await connection.stop();
         throw error;
     }
@@ -240,27 +69,35 @@ async function cotizarEnvio(accessToken, params) {
 // ============================================
 
 /**
- * POST /login
- * Hace login y retorna el access token
+ * POST /set-token
+ * Guarda el token en cache
  */
-app.post('/login', async (req, res) => {
+app.post('/set-token', (req, res) => {
     try {
-        const { username, password } = req.body;
+        const { username, access_token, expires_in } = req.body;
         
-        if (!username || !password) {
-            return res.status(400).json({ error: 'Username y password requeridos' });
+        if (!access_token) {
+            return res.status(400).json({ 
+                success: false,
+                error: 'access_token requerido' 
+            });
         }
         
-        const token = await getAccessToken(username, password);
+        tokenCache = {
+            access_token: access_token,
+            expires_at: Date.now() + ((expires_in || 5400) * 1000),
+            username: username
+        };
+        
+        console.log('💾 Token guardado en cache');
         
         res.json({
             success: true,
-            access_token: token,
-            expires_in: 7200
+            message: 'Token guardado correctamente',
+            expires_in: expires_in || 5400
         });
         
     } catch (error) {
-        console.error('❌ Error en login:', error.message);
         res.status(500).json({
             success: false,
             error: error.message
@@ -274,18 +111,7 @@ app.post('/login', async (req, res) => {
  */
 app.post('/cotizar', async (req, res) => {
     try {
-        const { username, password, params } = req.body;
-        
-        console.log('🔍 Request recibido en /cotizar');
-        console.log('Username:', username);
-        console.log('Params:', JSON.stringify(params, null, 2));
-        
-        if (!username || !password) {
-            return res.status(400).json({ 
-                success: false,
-                error: 'Credenciales requeridas' 
-            });
-        }
+        const { token, params } = req.body;
         
         if (!params) {
             return res.status(400).json({ 
@@ -294,11 +120,37 @@ app.post('/cotizar', async (req, res) => {
             });
         }
         
-        // Obtener token
-        const token = await getAccessToken(username, password);
+        // Usar token del request o del cache
+        let accessToken = token || tokenCache.access_token;
+        
+        if (!accessToken) {
+            return res.status(401).json({
+                success: false,
+                error: 'TOKEN_REQUIRED',
+                message: 'No hay token disponible. Enviá el token en el request.'
+            });
+        }
+        
+        // Verificar si está expirado (solo si es del cache)
+        if (!token && tokenCache.expires_at && tokenCache.expires_at < Date.now()) {
+            console.log('⚠️ Token en cache expirado');
+            return res.status(401).json({
+                success: false,
+                error: 'TOKEN_EXPIRED',
+                message: 'El token en cache expiró. Enviá un token fresco.'
+            });
+        }
+        
+        console.log('✅ Token disponible, cotizando...');
+        
+        // Si vino un token nuevo en el request, guardarlo
+        if (token) {
+            tokenCache.access_token = token;
+            tokenCache.expires_at = Date.now() + (5400 * 1000);
+        }
         
         // Cotizar
-        const result = await cotizarEnvio(token, params);
+        const result = await cotizarEnvio(accessToken, params);
         
         res.json({
             success: true,
@@ -307,48 +159,17 @@ app.post('/cotizar', async (req, res) => {
         
     } catch (error) {
         console.error('❌ Error en cotización:', error.message);
-        console.error('Stack:', error.stack);
-        res.status(500).json({
-            success: false,
-            error: error.message,
-            details: error.stack
-        });
-    }
-});
-
-/**
- * GET /health
- * Verifica que el servicio esté funcionando
- */
-app.get('/health', (req, res) => {
-    res.json({
-        status: 'ok',
-        uptime: process.uptime(),
-        token_cached: !!tokenCache.access_token,
-        token_expires_in: tokenCache.expires_at ? Math.floor((tokenCache.expires_at - Date.now()) / 1000) : 0
-    });
-});
-
-/**
- * POST /refresh-token
- * Fuerza renovación del token
- */
-app.post('/refresh-token', async (req, res) => {
-    try {
-        const { username, password } = req.body;
         
-        // Limpiar cache
-        tokenCache.access_token = null;
-        tokenCache.expires_at = null;
+        // Si es error de autenticación, limpiar cache
+        if (error.message.includes('401') || error.message.includes('Unauthorized')) {
+            tokenCache = { access_token: null, expires_at: null, username: null };
+            return res.status(401).json({
+                success: false,
+                error: 'TOKEN_INVALID',
+                message: 'Token inválido o expirado'
+            });
+        }
         
-        const token = await getAccessToken(username, password);
-        
-        res.json({
-            success: true,
-            access_token: token
-        });
-        
-    } catch (error) {
         res.status(500).json({
             success: false,
             error: error.message
@@ -356,19 +177,33 @@ app.post('/refresh-token', async (req, res) => {
     }
 });
 
+/**
+ * GET /health
+ */
+app.get('/health', (req, res) => {
+    const hasToken = !!tokenCache.access_token;
+    const isExpired = tokenCache.expires_at ? tokenCache.expires_at < Date.now() : true;
+    
+    res.json({
+        status: 'ok',
+        uptime: process.uptime(),
+        token_cached: hasToken,
+        token_expired: isExpired,
+        token_expires_in: tokenCache.expires_at ? Math.floor((tokenCache.expires_at - Date.now()) / 1000) : 0
+    });
+});
+
 // Ruta raíz
 app.get('/', (req, res) => {
     res.json({
         service: 'Andreani Service API',
-        version: '1.0.0',
+        version: '2.0.0 - Simplified',
         endpoints: {
             health: 'GET /health',
-            login: 'POST /login',
-            cotizar: 'POST /cotizar',
-            refresh: 'POST /refresh-token'
+            set_token: 'POST /set-token',
+            cotizar: 'POST /cotizar'
         },
-        status: 'running',
-        chrome_path: process.env.CHROME_PATH || 'chrome-aws-lambda'
+        status: 'running'
     });
 });
 
@@ -378,7 +213,7 @@ app.listen(PORT, () => {
 ╔═══════════════════════════════════════╗
 ║   🚀 Andreani Service RUNNING         ║
 ║   📡 Port: ${PORT}                       ║
-║   🔗 Ready to receive requests        ║
+║   ✅ Sin Puppeteer - 100% estable     ║
 ╚═══════════════════════════════════════╝
     `);
 });
