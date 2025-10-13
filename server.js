@@ -1,13 +1,13 @@
 /**
- * Microservicio Node.js para Andreani PyMEs
+ * Microservicio Node.js para Andreani PyMés
  * Maneja login OAuth2 + WebSocket SignalR
- * OPTIMIZADO PARA RAILWAY con puppeteer-core
+ * OPTIMIZADO PARA RAILWAY
  */
 
 const express = require('express');
 const { HubConnectionBuilder, HttpTransportType } = require('@microsoft/signalr');
 const puppeteer = require('puppeteer-core');
-const chromium = require('chrome-aws-lambda');
+const chromium = require('@sparticuz/chromium');
 const cors = require('cors');
 require('dotenv').config();
 
@@ -29,27 +29,24 @@ let tokenCache = {
 async function loginAndreani(username, password) {
     console.log('🔐 Iniciando login con Puppeteer...');
     
-    // Configuración para Railway/Producción vs Local
-    const isProduction = process.env.NODE_ENV === 'production' || !process.env.LOCAL_CHROME;
-    
-    let browser;
-    if (isProduction) {
-        // Usar chrome-aws-lambda en Railway
-        browser = await chromium.puppeteer.launch({
-            args: [...chromium.args, '--no-sandbox', '--disable-setuid-sandbox'],
-            defaultViewport: chromium.defaultViewport,
-            executablePath: await chromium.executablePath,
-            headless: true,
-        });
-    } else {
-        // Usar Chrome local para desarrollo
-        browser = await puppeteer.launch({
-            headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
-        });
-    }
+    let browser = null;
     
     try {
+        // Configurar Chromium para Railway
+        const executablePath = await chromium.executablePath();
+        
+        console.log('📍 Chromium path:', executablePath);
+        
+        // Lanzar browser
+        browser = await puppeteer.launch({
+            args: chromium.args,
+            defaultViewport: chromium.defaultViewport,
+            executablePath: executablePath,
+            headless: chromium.headless,
+        });
+        
+        console.log('✅ Browser iniciado correctamente');
+        
         const page = await browser.newPage();
         
         // Interceptar requests para capturar el token
@@ -61,6 +58,7 @@ async function loginAndreani(username, password) {
                 const match = url.match(/access_token=([^&]+)/);
                 if (match) {
                     accessToken = match[1];
+                    console.log('🎯 Token capturado en request');
                 }
             }
         });
@@ -74,6 +72,7 @@ async function loginAndreani(username, password) {
                         const authHeader = headers['authorization'];
                         if (authHeader.startsWith('Bearer ')) {
                             accessToken = authHeader.substring(7);
+                            console.log('🎯 Token capturado en response header');
                         }
                     }
                 } catch (e) {
@@ -83,12 +82,13 @@ async function loginAndreani(username, password) {
         });
         
         // Ir a la página de login
+        console.log('📄 Navegando a página de login...');
         await page.goto('https://onboarding.andreani.com/', {
             waitUntil: 'networkidle2',
             timeout: 60000
         });
         
-        console.log('📄 Página cargada, buscando formulario de login...');
+        console.log('✅ Página cargada, buscando formulario de login...');
         
         // Esperar y completar formulario
         await page.waitForSelector('input[type="email"], input[name="signInName"]', { timeout: 30000 });
@@ -146,6 +146,7 @@ async function loginAndreani(username, password) {
         }
         
         await browser.close();
+        browser = null;
         
         if (!accessToken) {
             throw new Error('No se pudo obtener el access token');
@@ -160,7 +161,10 @@ async function loginAndreani(username, password) {
         return accessToken;
         
     } catch (error) {
-        await browser.close();
+        console.error('❌ Error en loginAndreani:', error.message);
+        if (browser) {
+            await browser.close();
+        }
         throw error;
     }
 }
@@ -363,7 +367,8 @@ app.get('/', (req, res) => {
             cotizar: 'POST /cotizar',
             refresh: 'POST /refresh-token'
         },
-        status: 'running'
+        status: 'running',
+        chrome_path: process.env.CHROME_PATH || 'chrome-aws-lambda'
     });
 });
 
@@ -373,7 +378,7 @@ app.listen(PORT, () => {
 ╔═══════════════════════════════════════╗
 ║   🚀 Andreani Service RUNNING         ║
 ║   📡 Port: ${PORT}                       ║
-║   🔗 http://localhost:${PORT}           ║
+║   🔗 Ready to receive requests        ║
 ╚═══════════════════════════════════════╝
     `);
 });
