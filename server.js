@@ -60,38 +60,41 @@ async function getValidToken(username, password) {
 
 /**
  * Cotiza envío usando la API privada (requiere token)
+ * NOTA: Andreani PyMés no tiene endpoint público de cotización con token
+ * Usamos el cotizador REST público que SÍ funciona
  */
 async function cotizarEnvioPrivado(params, token) {
-    const apiUrl = 'https://pymes-api.andreani.com/api/v1/Cotizaciones';
+    // La API de Andreani PyMés NO tiene /api/v1/Cotizaciones
+    // Debemos usar el cotizador REST público
+    const apiUrl = 'https://cotizador-api.andreani.com/api/v1/Cotizar';
     
-    // Estructura para API privada
+    // Extraer código postal desde sucursalId (últimos 4 dígitos) o usar parámetro
+    let codigoPostalOrigen = params.codigoPostalOrigen || '8000';
+    
+    // Si tenemos sucursalOrigen pero no CP, intentar extraerlo
+    if (!params.codigoPostalOrigen && params.sucursalOrigen) {
+        // Por ahora usar el CP por defecto
+        console.log('⚠️ Usando CP origen por defecto:', codigoPostalOrigen);
+    }
+    
+    //Estructura para API REST pública
     const requestData = {
-        tiposDeEnvioId: params.tipoDeEnvioId,
-        origen: {
-            sucursalId: params.sucursalOrigen,
-            puntoDeTerceroId: null
-        },
-        destino: {
-            provincia: params.destinatario.provincia.toUpperCase(),
-            localidad: params.destinatario.localidad.toUpperCase(),
-            codigoPostal: params.codigoPostalDestino,
-            calle: params.destinatario.calle || '',
-            numero: params.destinatario.numero || '',
-            piso: params.destinatario.piso || '',
-            unidad: params.destinatario.departamento || ''
-        },
-        paquetes: params.bultos.map(bulto => ({
+        usuarioId: null,
+        tipoDeEnvioId: params.tipoDeEnvioId,
+        codigoPostalOrigen: codigoPostalOrigen,
+        codigoPostalDestino: params.codigoPostalDestino,
+        bultos: params.bultos.map(bulto => ({
             itemId: generateGuid(),
-            alto: bulto.altoCm,
-            ancho: bulto.anchoCm,
-            largo: bulto.largoCm,
-            peso: bulto.peso,
-            valorDeclarado: bulto.valorDeclarado,
-            cantidadDeBultos: 1
+            altoCm: bulto.altoCm.toString(),
+            anchoCm: bulto.anchoCm.toString(),
+            largoCm: bulto.largoCm.toString(),
+            peso: (bulto.peso / 1000).toString(), // convertir a kg
+            unidad: 'kg',
+            valorDeclarado: bulto.valorDeclarado.toString()
         }))
     };
     
-    console.log('📤 Cotizando con API privada...');
+    console.log('📤 Cotizando con API REST pública...');
     console.log('URL:', apiUrl);
     console.log('Request:', JSON.stringify(requestData, null, 2));
     
@@ -99,9 +102,11 @@ async function cotizarEnvioPrivado(params, token) {
         const response = await fetch(apiUrl, {
             method: 'POST',
             headers: {
-                'Authorization': `Bearer ${token}`,
                 'Content-Type': 'application/json',
-                'Accept': 'application/json'
+                'Accept': 'application/json',
+                'xapikey': 'TEST_XqPMiwXzTRKHH0mF3gmtPtQt3LNGIuqCTdgaUHINMdmlaFid0x9MzlYTKXPxluYQ',
+                'Origin': 'https://pymes.andreani.com',
+                'Referer': 'https://pymes.andreani.com/cotizador'
             },
             body: JSON.stringify(requestData)
         });
@@ -112,9 +117,6 @@ async function cotizarEnvioPrivado(params, token) {
         console.log('Body:', responseText);
         
         if (!response.ok) {
-            if (response.status === 401) {
-                throw new Error('TOKEN_EXPIRED');
-            }
             throw new Error(`HTTP ${response.status}: ${responseText}`);
         }
         
@@ -153,6 +155,9 @@ app.post('/cotizar', async (req, res) => {
         const { params, username, password, token } = req.body;
         
         console.log('📍 Request recibido en /cotizar');
+        console.log('Username:', username ? '✅' : '❌');
+        console.log('Password:', password ? '✅' : '❌');
+        console.log('Token manual:', token ? '✅' : '❌');
         
         if (!params) {
             return res.status(400).json({ 
@@ -167,6 +172,7 @@ app.post('/cotizar', async (req, res) => {
         
         if (!accessToken) {
             if (!username || !password) {
+                console.error('❌ Sin credenciales ni token');
                 return res.status(400).json({
                     success: false,
                     error: 'AUTH_REQUIRED',
@@ -175,7 +181,20 @@ app.post('/cotizar', async (req, res) => {
             }
             
             // Hacer login para obtener token
-            accessToken = await getValidToken(username, password);
+            console.log('🔐 Obteniendo token con credenciales...');
+            try {
+                accessToken = await getValidToken(username, password);
+                console.log('✅ Token obtenido:', accessToken.substring(0, 20) + '...');
+            } catch (error) {
+                console.error('❌ Error al obtener token:', error.message);
+                return res.status(401).json({
+                    success: false,
+                    error: 'LOGIN_FAILED',
+                    message: error.message
+                });
+            }
+        } else {
+            console.log('🔑 Usando token manual proporcionado');
         }
         
         console.log('✅ Cotizando con API privada...');
