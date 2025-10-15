@@ -1,7 +1,7 @@
 {
     "name": "andreani-service",
-    "version": "4.0.0",
-    "description": "Microservicio para Andreani PyMés - Cotización + Crear Envíos",
+    "version": "5.0.0",
+    "description": "Microservicio para Andreani PyMés - API Privada Completa (Login + Cotización + Crear Envíos)",
     "main": "server.js",
     "scripts": {
       "start": "node server.js",
