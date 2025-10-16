@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
-const { chromium } = require('playwright-core');
+const fetch = require('node-fetch');
+const { URLSearchParams } = require('url');
 require('dotenv').config();
 
 const app = express();
@@ -14,175 +15,146 @@ let cachedToken = null;
 let tokenExpiry = null;
 
 /**
- * Autenticación liviana con Playwright
+ * Nuevo sistema de autenticación OAuth2 con Andreani B2C
  */
 async function getValidToken(username, password) {
+    // Si hay token en cache y no expiró, usarlo
     if (cachedToken && tokenExpiry && Date.now() < tokenExpiry) {
         console.log('✅ Usando token desde cache');
         return cachedToken;
     }
     
-    console.log('🔄 Autenticación rápida con Playwright...');
+    console.log('🔄 Obteniendo nuevo token con OAuth2...');
     
-    let browser;
     try {
-        // Usar Chromium del sistema o descargar versión mínima
-        browser = await chromium.launch({
-            headless: true,
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-accelerated-2d-canvas',
-                '--no-first-run',
-                '--no-zygote',
-                '--disable-gpu'
-            ]
-        });
+        // Paso 1: Obtener el código de autorización
+        const authCode = await getAuthorizationCode(username, password);
         
-        const context = await browser.newContext({
-            viewport: { width: 1280, height: 720 },
-            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        });
+        // Paso 2: Cambiar el código por el token de acceso
+        const tokenData = await exchangeCodeForToken(authCode);
         
-        const page = await context.newPage();
+        cachedToken = tokenData.access_token;
+        const expiresIn = tokenData.expires_in || 3600;
+        tokenExpiry = Date.now() + (expiresIn * 1000 * 0.9); // 90% del tiempo
         
-        // Navegar directamente al endpoint de login de API (si existe)
-        console.log('🔐 Intentando login directo...');
-        
-        // PRIMERO: Intentar endpoint directo (más rápido)
-        try {
-            const directToken = await tryDirectLogin(username, password);
-            if (directToken) {
-                cachedToken = directToken;
-                tokenExpiry = Date.now() + (3600 * 1000 * 0.9);
-                console.log('✅ Token obtenido por método directo');
-                return directToken;
-            }
-        } catch (directError) {
-            console.log('⚠️ Método directo falló, usando navegador...');
-        }
-        
-        // SEGUNDO: Usar navegador como fallback
-        await page.goto('https://pymes.andreani.com/', { 
-            waitUntil: 'domcontentloaded',
-            timeout: 10000
-        });
-        
-        // Buscar formulario de login rápidamente
-        const loginUrl = await findLoginUrl(page);
-        if (loginUrl) {
-            await page.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 10000 });
-            
-            // Intentar llenar formulario rápidamente
-            await page.fill('input[type="email"], input[name="email"], #email', username, { timeout: 5000 });
-            await page.fill('input[type="password"], input[name="password"], #password', password, { timeout: 5000 });
-            await page.click('button[type="submit"], input[type="submit"]', { timeout: 5000 });
-            
-            // Esperar navegación breve
-            await page.waitForTimeout(3000);
-            
-            // Extraer token de cookies
-            const cookies = await context.cookies();
-            const authCookie = cookies.find(cookie => 
-                cookie.name.includes('token') || 
-                cookie.name.includes('auth') ||
-                cookie.name.includes('session')
-            );
-            
-            if (authCookie) {
-                cachedToken = authCookie.value;
-                tokenExpiry = Date.now() + (3600 * 1000 * 0.9);
-                console.log('✅ Token obtenido de cookies');
-                return authCookie.value;
-            }
-        }
-        
-        throw new Error('No se pudo autenticar');
+        console.log('✅ Token obtenido exitosamente');
+        return cachedToken;
         
     } catch (error) {
-        console.error('❌ Error en autenticación:', error.message);
-        throw new Error('AUTH_FAILED: ' + error.message);
-    } finally {
-        if (browser) {
-            await browser.close();
-        }
+        console.error('❌ Error en autenticación OAuth2:', error.message);
+        throw new Error('OAUTH2_LOGIN_FAILED: ' + error.message);
     }
 }
 
 /**
- * Intentar login directo a API
+ * Paso 1: Obtener código de autorización mediante el flujo de login
  */
-async function tryDirectLogin(username, password) {
-    try {
-        // Intentar diferentes endpoints posibles
-        const endpoints = [
-            'https://pymes-api.andreani.com/api/v1/Acceso/login',
-            'https://api.andreani.com/login',
-            'https://pymes.andreani.com/api/auth/login'
-        ];
-        
-        for (const endpoint of endpoints) {
-            try {
-                const response = await fetch(endpoint, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ username, password }),
-                    timeout: 5000
-                });
-                
-                if (response.ok) {
-                    const data = await response.json();
-                    return data.access_token || data.token;
-                }
-            } catch (e) {
-                // Continuar con siguiente endpoint
-                continue;
-            }
-        }
-        
-        return null;
-    } catch (error) {
-        return null;
-    }
-}
-
-/**
- * Encontrar URL de login
- */
-async function findLoginUrl(page) {
-    try {
-        // Buscar enlaces de login
-        const loginLinks = await page.$$eval('a', links => 
-            links
-                .filter(link => 
-                    link.textContent.toLowerCase().includes('login') ||
-                    link.textContent.toLowerCase().includes('iniciar') ||
-                    link.href.includes('login')
-                )
-                .map(link => link.href)
-        );
-        
-        return loginLinks[0] || 'https://pymes.andreani.com/#/login';
-    } catch (error) {
-        return 'https://pymes.andreani.com/#/login';
-    }
-}
-
-/**
- * API pública para cotizaciones (SIN AUTENTICACIÓN)
- */
-async function cotizarConApiPublica(params) {
-    console.log('📤 Cotización rápida con API pública...');
+async function getAuthorizationCode(username, password) {
+    console.log('🔐 Iniciando flujo OAuth2...');
     
+    // Simular el flujo de login web
+    const loginData = new URLSearchParams();
+    loginData.append('Email', username);
+    loginData.append('Contraseña', password);
+    
+    const response = await fetch('https://onboarding.andreani.com/login', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        },
+        body: loginData,
+        redirect: 'manual' // No seguir redirecciones automáticamente
+    });
+    
+    if (response.status === 302) {
+        const location = response.headers.get('location');
+        if (location && location.includes('code=')) {
+            const codeMatch = location.match(/code=([^&]+)/);
+            if (codeMatch) {
+                return codeMatch[1];
+            }
+        }
+    }
+    
+    throw new Error('No se pudo obtener el código de autorización');
+}
+
+/**
+ * Paso 2: Cambiar código por token de acceso
+ */
+async function exchangeCodeForToken(authorizationCode) {
+    console.log('🔄 Cambiando código por token...');
+    
+    const tokenParams = new URLSearchParams();
+    tokenParams.append('client_id', '8a428062-b113-4fb6-b496-8ddb1003b566');
+    tokenParams.append('grant_type', 'authorization_code');
+    tokenParams.append('code', authorizationCode);
+    tokenParams.append('redirect_uri', 'https://onboarding.andreani.com/');
+    tokenParams.append('scope', 'openid profile offline_access');
+    
+    const response = await fetch('https://andreanib2c.b2clogin.com/andreanib2c.onmicrosoft.com/b2c_1a_susi_gcp_acom_v2/oauth2/v2.0/token', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        },
+        body: tokenParams
+    });
+    
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Token exchange failed: ${response.status} - ${errorText}`);
+    }
+    
+    return await response.json();
+}
+
+/**
+ * ALTERNATIVA: Usar autenticación directa con la API (si todavía funciona)
+ */
+async function getTokenDirect(username, password) {
+    console.log('🔐 Intentando autenticación directa...');
+    
+    try {
+        // Intentar con el endpoint tradicional primero
+        const response = await fetch('https://pymes-api.andreani.com/api/v1/Acceso/login', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            },
+            body: JSON.stringify({ username, password })
+        });
+        
+        if (response.ok) {
+            const data = await response.json();
+            console.log('✅ Token obtenido por método directo');
+            return data.access_token;
+        }
+        
+        // Si falla, probar con OAuth2
+        console.log('⚠️ Método directo falló, intentando OAuth2...');
+        return await getValidToken(username, password);
+        
+    } catch (error) {
+        console.error('❌ Error en autenticación directa:', error.message);
+        throw error;
+    }
+}
+
+/**
+ * Cotiza envío usando la API privada
+ */
+async function cotizarEnvioPrivado(params, token) {
     const apiUrl = 'https://cotizador-api.andreani.com/api/v1/Cotizar';
+    
+    let codigoPostalOrigen = params.codigoPostalOrigen || '8000';
     
     const requestData = {
         usuarioId: null,
         tipoDeEnvioId: params.tipoDeEnvioId,
-        codigoPostalOrigen: params.codigoPostalOrigen || '8000',
+        codigoPostalOrigen: codigoPostalOrigen,
         codigoPostalDestino: params.codigoPostalDestino,
         bultos: params.bultos.map(bulto => ({
             itemId: generateGuid(),
@@ -195,6 +167,8 @@ async function cotizarConApiPublica(params) {
         }))
     };
     
+    console.log('📤 Cotizando con API REST pública...');
+    
     try {
         const response = await fetch(apiUrl, {
             method: 'POST',
@@ -205,11 +179,12 @@ async function cotizarConApiPublica(params) {
                 'Origin': 'https://pymes.andreani.com',
                 'Referer': 'https://pymes.andreani.com/cotizador'
             },
-            body: JSON.stringify(requestData),
-            timeout: 10000
+            body: JSON.stringify(requestData)
         });
         
         const responseText = await response.text();
+        
+        console.log('📥 Respuesta (Status:', response.status, ')');
         
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}: ${responseText}`);
@@ -227,10 +202,10 @@ async function cotizarConApiPublica(params) {
 }
 
 /**
- * Crear envío con token
+ * Crea un envío en Andreani
  */
 async function crearEnvio(envio, token) {
-    console.log('📤 Creando envío...');
+    console.log('📤 Creando envío en Andreani API...');
     
     const response = await fetch('https://pymes-api.andreani.com/api/v1/Envios', {
         method: 'POST',
@@ -239,12 +214,11 @@ async function crearEnvio(envio, token) {
             'Content-Type': 'application/json',
             'Accept': 'application/json'
         },
-        body: JSON.stringify(envio),
-        timeout: 15000
+        body: JSON.stringify(envio)
     });
     
     const responseText = await response.text();
-    console.log('📥 Respuesta (Status:', response.status, ')');
+    console.log('📥 Respuesta de Andreani (Status:', response.status, ')');
     
     if (!response.ok) {
         if (response.status === 401) {
@@ -252,30 +226,79 @@ async function crearEnvio(envio, token) {
             tokenExpiry = null;
             throw new Error('TOKEN_EXPIRED');
         }
+        
         throw new Error(`HTTP ${response.status}: ${responseText}`);
     }
     
-    return JSON.parse(responseText);
+    let result;
+    try {
+        result = JSON.parse(responseText);
+    } catch {
+        result = { message: 'Envío creado' };
+    }
+    
+    console.log('✅ Envío creado exitosamente');
+    return result;
+}
+
+/**
+ * Genera un GUID
+ */
+function generateGuid() {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+        const r = Math.random() * 16 | 0;
+        const v = c === 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+    });
 }
 
 // ============================================
-// ENDPOINTS (MISMOS)
+// ENDPOINTS (MISMOS QUE ANTES)
 // ============================================
 
 app.post('/cotizar', async (req, res) => {
     try {
-        const { params } = req.body;
+        const { params, username, password, token } = req.body;
         
-        console.log('📍 /cotizar - API pública');
+        console.log('📍 Request recibido en /cotizar');
+        console.log('Username:', username ? '✅' : '❌');
+        console.log('Password:', password ? '✅' : '❌');
+        console.log('Token manual:', token ? '✅' : '❌');
         
         if (!params) {
             return res.status(400).json({ 
                 success: false,
-                error: 'PARAMS_REQUIRED'
+                error: 'PARAMS_REQUIRED',
+                message: 'Parámetros de cotización requeridos' 
             });
         }
         
-        const result = await cotizarConApiPublica(params);
+        let accessToken = token;
+        
+        if (!accessToken) {
+            if (!username || !password) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'AUTH_REQUIRED',
+                    message: 'Se requiere token o credenciales'
+                });
+            }
+            
+            try {
+                // Usar el método directo primero, que fallará al OAuth2 si es necesario
+                accessToken = await getTokenDirect(username, password);
+            } catch (error) {
+                console.error('❌ Error de autenticación:', error.message);
+                return res.status(401).json({
+                    success: false,
+                    error: 'LOGIN_FAILED',
+                    message: 'Credenciales inválidas o sistema de login cambiado'
+                });
+            }
+        }
+        
+        console.log('✅ Cotizando con token válido...');
+        const result = await cotizarEnvioPrivado(params, accessToken);
         
         res.json({
             success: true,
@@ -295,12 +318,13 @@ app.post('/crear-envio', async (req, res) => {
     try {
         const { envio, username, password, token } = req.body;
         
-        console.log('📦 /crear-envio');
+        console.log('📦 Request recibido en /crear-envio');
         
         if (!envio) {
             return res.status(400).json({
                 success: false,
-                error: 'ENVIO_DATA_REQUIRED'
+                error: 'ENVIO_DATA_REQUIRED',
+                message: 'Se requieren datos del envío'
             });
         }
         
@@ -310,18 +334,20 @@ app.post('/crear-envio', async (req, res) => {
             if (!username || !password) {
                 return res.status(400).json({
                     success: false,
-                    error: 'AUTH_REQUIRED'
+                    error: 'AUTH_REQUIRED',
+                    message: 'Se requiere token o credenciales'
                 });
             }
             
-            accessToken = await getValidToken(username, password);
+            accessToken = await getTokenDirect(username, password);
         }
         
         const result = await crearEnvio(envio, accessToken);
         
         res.json({
             success: true,
-            data: result
+            data: result,
+            message: 'Envío pendiente creado en Andreani'
         });
         
     } catch (error) {
@@ -330,7 +356,8 @@ app.post('/crear-envio', async (req, res) => {
         if (error.message === 'TOKEN_EXPIRED') {
             return res.status(401).json({
                 success: false,
-                error: 'TOKEN_EXPIRED'
+                error: 'TOKEN_EXPIRED',
+                message: 'Token expirado'
             });
         }
         
@@ -345,16 +372,17 @@ app.post('/login', async (req, res) => {
     try {
         const { username, password } = req.body;
         
-        console.log('🔐 /login para:', username);
+        console.log('🔐 Login request para:', username);
         
         if (!username || !password) {
             return res.status(400).json({
                 success: false,
-                error: 'CREDENTIALS_REQUIRED'
+                error: 'CREDENTIALS_REQUIRED',
+                message: 'Se requieren usuario y contraseña'
             });
         }
         
-        const token = await getValidToken(username, password);
+        const token = await getTokenDirect(username, password);
         
         res.json({
             success: true,
@@ -366,7 +394,8 @@ app.post('/login', async (req, res) => {
         console.error('❌ Error en login:', error.message);
         res.status(500).json({
             success: false,
-            error: 'LOGIN_FAILED'
+            error: 'LOGIN_FAILED',
+            message: error.message
         });
     }
 });
@@ -376,41 +405,32 @@ app.get('/health', (req, res) => {
         status: 'ok',
         uptime: Math.floor(process.uptime()),
         token_cached: cachedToken !== null,
-        memory: process.memoryUsage(),
-        version: '8.0.0 - Liviano'
+        token_valid: cachedToken && tokenExpiry && Date.now() < tokenExpiry,
+        auth_system: 'OAuth2 B2C + Método Directo'
     });
 });
 
 app.get('/', (req, res) => {
     res.json({
         service: 'Andreani Service API',
-        version: '8.0.0 - Versión Liviana',
-        performance: 'Optimizado para deploy rápido',
+        version: '6.0.0 - Sistema OAuth2 B2C',
         endpoints: {
-            cotizar: 'POST /cotizar (API pública - rápido)',
+            health: 'GET /health',
+            cotizar: 'POST /cotizar',
             crear_envio: 'POST /crear-envio',
-            login: 'POST /login', 
-            health: 'GET /health'
-        }
+            login: 'POST /login'
+        },
+        auth_system: 'Soporte para nuevo login OAuth2 de Andreani'
     });
 });
-
-function generateGuid() {
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-        const r = Math.random() * 16 | 0;
-        const v = c === 'x' ? r : (r & 0x3 | 0x8);
-        return v.toString(16);
-    });
-}
 
 app.listen(PORT, () => {
     console.log(`
 ╔═══════════════════════════════════════╗
 ║   🚀 Andreani Service RUNNING         ║
-║   📡 Port: ${PORT}                       ║  
-║   ⚡ VERSIÓN LIVIANA - RÁPIDO         ║
-║   🎯 Cotizaciones: API pública        ║
-║   🤖 Envíos: Playwright mínimo        ║
+║   📡 Port: ${PORT}                       ║
+║   ✅ Sistema OAuth2 B2C               ║
+║   🔐 Nuevo flujo de autenticación     ║
 ╚═══════════════════════════════════════╝
     `);
 });
