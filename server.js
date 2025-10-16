@@ -1,12 +1,7 @@
-/**
- * Microservicio Node.js para Andreani PyMés
- * - Login: Obtiene token de acceso
- * - Cotizar: API privada CON token
- * - Crear envío: API privada CON token
- */
-
 const express = require('express');
 const cors = require('cors');
+const fetch = require('node-fetch');
+const { URLSearchParams } = require('url');
 require('dotenv').config();
 
 const app = express();
@@ -20,7 +15,7 @@ let cachedToken = null;
 let tokenExpiry = null;
 
 /**
- * Obtiene un token válido (desde cache o login)
+ * Nuevo sistema de autenticación OAuth2 con Andreani B2C
  */
 async function getValidToken(username, password) {
     // Si hay token en cache y no expiró, usarlo
@@ -29,55 +24,133 @@ async function getValidToken(username, password) {
         return cachedToken;
     }
     
-    // Token expirado o no existe, hacer login
-    console.log('🔄 Obteniendo nuevo token...');
+    console.log('🔄 Obteniendo nuevo token con OAuth2...');
     
-    const response = await fetch('https://pymes-api.andreani.com/api/v1/Acceso/login', {
+    try {
+        // Paso 1: Obtener el código de autorización
+        const authCode = await getAuthorizationCode(username, password);
+        
+        // Paso 2: Cambiar el código por el token de acceso
+        const tokenData = await exchangeCodeForToken(authCode);
+        
+        cachedToken = tokenData.access_token;
+        const expiresIn = tokenData.expires_in || 3600;
+        tokenExpiry = Date.now() + (expiresIn * 1000 * 0.9); // 90% del tiempo
+        
+        console.log('✅ Token obtenido exitosamente');
+        return cachedToken;
+        
+    } catch (error) {
+        console.error('❌ Error en autenticación OAuth2:', error.message);
+        throw new Error('OAUTH2_LOGIN_FAILED: ' + error.message);
+    }
+}
+
+/**
+ * Paso 1: Obtener código de autorización mediante el flujo de login
+ */
+async function getAuthorizationCode(username, password) {
+    console.log('🔐 Iniciando flujo OAuth2...');
+    
+    // Simular el flujo de login web
+    const loginData = new URLSearchParams();
+    loginData.append('Email', username);
+    loginData.append('Contraseña', password);
+    
+    const response = await fetch('https://onboarding.andreani.com/login', {
         method: 'POST',
         headers: {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json'
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         },
-        body: JSON.stringify({ username, password })
+        body: loginData,
+        redirect: 'manual' // No seguir redirecciones automáticamente
+    });
+    
+    if (response.status === 302) {
+        const location = response.headers.get('location');
+        if (location && location.includes('code=')) {
+            const codeMatch = location.match(/code=([^&]+)/);
+            if (codeMatch) {
+                return codeMatch[1];
+            }
+        }
+    }
+    
+    throw new Error('No se pudo obtener el código de autorización');
+}
+
+/**
+ * Paso 2: Cambiar código por token de acceso
+ */
+async function exchangeCodeForToken(authorizationCode) {
+    console.log('🔄 Cambiando código por token...');
+    
+    const tokenParams = new URLSearchParams();
+    tokenParams.append('client_id', '8a428062-b113-4fb6-b496-8ddb1003b566');
+    tokenParams.append('grant_type', 'authorization_code');
+    tokenParams.append('code', authorizationCode);
+    tokenParams.append('redirect_uri', 'https://onboarding.andreani.com/');
+    tokenParams.append('scope', 'openid profile offline_access');
+    
+    const response = await fetch('https://andreanib2c.b2clogin.com/andreanib2c.onmicrosoft.com/b2c_1a_susi_gcp_acom_v2/oauth2/v2.0/token', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        },
+        body: tokenParams
     });
     
     if (!response.ok) {
         const errorText = await response.text();
-        console.error('❌ Error en login:', errorText);
-        throw new Error('LOGIN_FAILED: ' + errorText);
+        throw new Error(`Token exchange failed: ${response.status} - ${errorText}`);
     }
     
-    const data = await response.json();
-    
-    cachedToken = data.access_token;
-    const expiresIn = data.expires_in || 5400;
-    tokenExpiry = Date.now() + (expiresIn * 1000 * 0.9); // 90% del tiempo
-    
-    console.log('✅ Token obtenido y cacheado');
-    
-    return cachedToken;
+    return await response.json();
 }
 
 /**
- * Cotiza envío usando la API privada (requiere token)
- * NOTA: Andreani PyMés no tiene endpoint público de cotización con token
- * Usamos el cotizador REST público que SÍ funciona
+ * ALTERNATIVA: Usar autenticación directa con la API (si todavía funciona)
+ */
+async function getTokenDirect(username, password) {
+    console.log('🔐 Intentando autenticación directa...');
+    
+    try {
+        // Intentar con el endpoint tradicional primero
+        const response = await fetch('https://pymes-api.andreani.com/api/v1/Acceso/login', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            },
+            body: JSON.stringify({ username, password })
+        });
+        
+        if (response.ok) {
+            const data = await response.json();
+            console.log('✅ Token obtenido por método directo');
+            return data.access_token;
+        }
+        
+        // Si falla, probar con OAuth2
+        console.log('⚠️ Método directo falló, intentando OAuth2...');
+        return await getValidToken(username, password);
+        
+    } catch (error) {
+        console.error('❌ Error en autenticación directa:', error.message);
+        throw error;
+    }
+}
+
+/**
+ * Cotiza envío usando la API privada
  */
 async function cotizarEnvioPrivado(params, token) {
-    // La API de Andreani PyMés NO tiene /api/v1/Cotizaciones
-    // Debemos usar el cotizador REST público
     const apiUrl = 'https://cotizador-api.andreani.com/api/v1/Cotizar';
     
-    // Extraer código postal desde sucursalId (últimos 4 dígitos) o usar parámetro
     let codigoPostalOrigen = params.codigoPostalOrigen || '8000';
     
-    // Si tenemos sucursalOrigen pero no CP, intentar extraerlo
-    if (!params.codigoPostalOrigen && params.sucursalOrigen) {
-        // Por ahora usar el CP por defecto
-        console.log('⚠️ Usando CP origen por defecto:', codigoPostalOrigen);
-    }
-    
-    //Estructura para API REST pública
     const requestData = {
         usuarioId: null,
         tipoDeEnvioId: params.tipoDeEnvioId,
@@ -88,15 +161,13 @@ async function cotizarEnvioPrivado(params, token) {
             altoCm: bulto.altoCm.toString(),
             anchoCm: bulto.anchoCm.toString(),
             largoCm: bulto.largoCm.toString(),
-            peso: (bulto.peso / 1000).toString(), // convertir a kg
+            peso: (bulto.peso / 1000).toString(),
             unidad: 'kg',
             valorDeclarado: bulto.valorDeclarado.toString()
         }))
     };
     
     console.log('📤 Cotizando con API REST pública...');
-    console.log('URL:', apiUrl);
-    console.log('Request:', JSON.stringify(requestData, null, 2));
     
     try {
         const response = await fetch(apiUrl, {
@@ -114,7 +185,6 @@ async function cotizarEnvioPrivado(params, token) {
         const responseText = await response.text();
         
         console.log('📥 Respuesta (Status:', response.status, ')');
-        console.log('Body:', responseText);
         
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}: ${responseText}`);
@@ -132,7 +202,47 @@ async function cotizarEnvioPrivado(params, token) {
 }
 
 /**
- * Genera un GUID para itemId
+ * Crea un envío en Andreani
+ */
+async function crearEnvio(envio, token) {
+    console.log('📤 Creando envío en Andreani API...');
+    
+    const response = await fetch('https://pymes-api.andreani.com/api/v1/Envios', {
+        method: 'POST',
+        headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+        },
+        body: JSON.stringify(envio)
+    });
+    
+    const responseText = await response.text();
+    console.log('📥 Respuesta de Andreani (Status:', response.status, ')');
+    
+    if (!response.ok) {
+        if (response.status === 401) {
+            cachedToken = null;
+            tokenExpiry = null;
+            throw new Error('TOKEN_EXPIRED');
+        }
+        
+        throw new Error(`HTTP ${response.status}: ${responseText}`);
+    }
+    
+    let result;
+    try {
+        result = JSON.parse(responseText);
+    } catch {
+        result = { message: 'Envío creado' };
+    }
+    
+    console.log('✅ Envío creado exitosamente');
+    return result;
+}
+
+/**
+ * Genera un GUID
  */
 function generateGuid() {
     return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
@@ -143,13 +253,9 @@ function generateGuid() {
 }
 
 // ============================================
-// ENDPOINTS
+// ENDPOINTS (MISMOS QUE ANTES)
 // ============================================
 
-/**
- * POST /cotizar
- * Cotiza con API privada (requiere credenciales)
- */
 app.post('/cotizar', async (req, res) => {
     try {
         const { params, username, password, token } = req.body;
@@ -167,38 +273,31 @@ app.post('/cotizar', async (req, res) => {
             });
         }
         
-        // Obtener token (manual o mediante login)
         let accessToken = token;
         
         if (!accessToken) {
             if (!username || !password) {
-                console.error('❌ Sin credenciales ni token');
                 return res.status(400).json({
                     success: false,
                     error: 'AUTH_REQUIRED',
-                    message: 'Se requiere token o credenciales (usuario/contraseña)'
+                    message: 'Se requiere token o credenciales'
                 });
             }
             
-            // Hacer login para obtener token
-            console.log('🔐 Obteniendo token con credenciales...');
             try {
-                accessToken = await getValidToken(username, password);
-                console.log('✅ Token obtenido:', accessToken.substring(0, 20) + '...');
+                // Usar el método directo primero, que fallará al OAuth2 si es necesario
+                accessToken = await getTokenDirect(username, password);
             } catch (error) {
-                console.error('❌ Error al obtener token:', error.message);
+                console.error('❌ Error de autenticación:', error.message);
                 return res.status(401).json({
                     success: false,
                     error: 'LOGIN_FAILED',
-                    message: error.message
+                    message: 'Credenciales inválidas o sistema de login cambiado'
                 });
             }
-        } else {
-            console.log('🔑 Usando token manual proporcionado');
         }
         
-        console.log('✅ Cotizando con API privada...');
-        
+        console.log('✅ Cotizando con token válido...');
         const result = await cotizarEnvioPrivado(params, accessToken);
         
         res.json({
@@ -208,19 +307,6 @@ app.post('/cotizar', async (req, res) => {
         
     } catch (error) {
         console.error('❌ Error en cotización:', error.message);
-        
-        if (error.message === 'TOKEN_EXPIRED') {
-            // Limpiar cache y pedir reintento
-            cachedToken = null;
-            tokenExpiry = null;
-            
-            return res.status(401).json({
-                success: false,
-                error: 'TOKEN_EXPIRED',
-                message: 'Token expirado. Reintentando...'
-            });
-        }
-        
         res.status(500).json({
             success: false,
             error: error.message
@@ -228,10 +314,6 @@ app.post('/cotizar', async (req, res) => {
     }
 });
 
-/**
- * POST /crear-envio
- * Crea un envío pendiente en Andreani (requiere token)
- */
 app.post('/crear-envio', async (req, res) => {
     try {
         const { envio, username, password, token } = req.body;
@@ -246,7 +328,6 @@ app.post('/crear-envio', async (req, res) => {
             });
         }
         
-        // Obtener token
         let accessToken = token;
         
         if (!accessToken) {
@@ -258,62 +339,10 @@ app.post('/crear-envio', async (req, res) => {
                 });
             }
             
-            accessToken = await getValidToken(username, password);
+            accessToken = await getTokenDirect(username, password);
         }
         
-        console.log('📤 Creando envío en Andreani API...');
-        console.log('Datos del envío:', JSON.stringify(envio, null, 2));
-        
-        const response = await fetch('https://pymes-api.andreani.com/api/v1/Envios', {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${accessToken}`,
-                'Content-Type': 'application/json',
-                'Accept': 'application/json'
-            },
-            body: JSON.stringify(envio)
-        });
-        
-        const responseText = await response.text();
-        console.log('📥 Respuesta de Andreani (Status:', response.status, ')');
-        console.log('Body:', responseText);
-        
-        if (!response.ok) {
-            if (response.status === 401) {
-                cachedToken = null;
-                tokenExpiry = null;
-                
-                return res.status(401).json({
-                    success: false,
-                    error: 'TOKEN_EXPIRED',
-                    message: 'Token expirado'
-                });
-            }
-            
-            let errorData;
-            try {
-                errorData = JSON.parse(responseText);
-            } catch {
-                errorData = { message: responseText };
-            }
-            
-            return res.status(response.status).json({
-                success: false,
-                error: 'ANDREANI_API_ERROR',
-                message: 'Error de la API de Andreani',
-                details: errorData
-            });
-        }
-        
-        let result;
-        try {
-            result = JSON.parse(responseText);
-        } catch {
-            result = { message: 'Envío creado' };
-        }
-        
-        console.log('✅ Envío creado exitosamente');
-        console.log('Respuesta:', JSON.stringify(result, null, 2));
+        const result = await crearEnvio(envio, accessToken);
         
         res.json({
             success: true,
@@ -323,18 +352,22 @@ app.post('/crear-envio', async (req, res) => {
         
     } catch (error) {
         console.error('❌ Error al crear envío:', error.message);
+        
+        if (error.message === 'TOKEN_EXPIRED') {
+            return res.status(401).json({
+                success: false,
+                error: 'TOKEN_EXPIRED',
+                message: 'Token expirado'
+            });
+        }
+        
         res.status(500).json({
             success: false,
-            error: 'SERVER_ERROR',
-            message: error.message
+            error: error.message
         });
     }
 });
 
-/**
- * POST /login
- * Login manual (para obtener token si es necesario)
- */
 app.post('/login', async (req, res) => {
     try {
         const { username, password } = req.body;
@@ -349,7 +382,7 @@ app.post('/login', async (req, res) => {
             });
         }
         
-        const token = await getValidToken(username, password);
+        const token = await getTokenDirect(username, password);
         
         res.json({
             success: true,
@@ -367,45 +400,37 @@ app.post('/login', async (req, res) => {
     }
 });
 
-/**
- * GET /health
- */
 app.get('/health', (req, res) => {
     res.json({
         status: 'ok',
         uptime: Math.floor(process.uptime()),
         token_cached: cachedToken !== null,
         token_valid: cachedToken && tokenExpiry && Date.now() < tokenExpiry,
-        api: 'API privada (requiere autenticación)'
+        auth_system: 'OAuth2 B2C + Método Directo'
     });
 });
 
-/**
- * GET /
- */
 app.get('/', (req, res) => {
     res.json({
         service: 'Andreani Service API',
-        version: '5.0.0 - API Privada Completa',
+        version: '6.0.0 - Sistema OAuth2 B2C',
         endpoints: {
             health: 'GET /health',
-            cotizar: 'POST /cotizar (requiere credenciales o token)',
-            crear_envio: 'POST /crear-envio (requiere credenciales o token)',
-            login: 'POST /login (obtener token manualmente)'
+            cotizar: 'POST /cotizar',
+            crear_envio: 'POST /crear-envio',
+            login: 'POST /login'
         },
-        status: 'running',
-        note: 'Todas las operaciones requieren autenticación'
+        auth_system: 'Soporte para nuevo login OAuth2 de Andreani'
     });
 });
 
-// Iniciar servidor
 app.listen(PORT, () => {
     console.log(`
 ╔═══════════════════════════════════════╗
 ║   🚀 Andreani Service RUNNING         ║
 ║   📡 Port: ${PORT}                       ║
-║   ✅ API Privada Completa              ║
-║   🔐 Login + Cotizar + Crear Envíos   ║
+║   ✅ Sistema OAuth2 B2C               ║
+║   🔐 Nuevo flujo de autenticación     ║
 ╚═══════════════════════════════════════╝
     `);
 });
