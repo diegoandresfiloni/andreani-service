@@ -1,7 +1,7 @@
 {
     "name": "andreani-service",
-    "version": "5.0.0",
-    "description": "Microservicio para Andreani PyMés - API Privada Completa (Login + Cotización + Crear Envíos)",
+    "version": "6.0.0",
+    "description": "Microservicio para Andreani PyMés - Soporte OAuth2 B2C",
     "main": "server.js",
     "scripts": {
       "start": "node server.js",
@@ -10,7 +10,8 @@
     "dependencies": {
       "express": "^4.18.2",
       "cors": "^2.8.5",
-      "dotenv": "^16.3.1"
+      "dotenv": "^16.3.1",
+      "node-fetch": "^2.6.7"
     },
     "devDependencies": {
       "nodemon": "^3.0.1"
