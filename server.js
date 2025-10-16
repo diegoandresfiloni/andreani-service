@@ -219,7 +219,7 @@ async function crearEnvio(envio, token) {
 }
 
 // ============================================
-// ENDPOINTS ACTUALIZADOS
+// ENDPOINTS COMPLETOS
 // ============================================
 
 app.post('/cotizar', async (req, res) => {
@@ -227,11 +227,15 @@ app.post('/cotizar', async (req, res) => {
         const { params, username, password, token } = req.body;
         
         console.log('📍 Request recibido en /cotizar');
+        console.log('Username:', username ? '✅' : '❌');
+        console.log('Password:', password ? '✅' : '❌');
+        console.log('Token manual:', token ? '✅' : '❌');
         
         if (!params) {
             return res.status(400).json({ 
                 success: false,
-                error: 'PARAMS_REQUIRED'
+                error: 'PARAMS_REQUIRED',
+                message: 'Parámetros de cotización requeridos' 
             });
         }
         
@@ -263,7 +267,8 @@ app.post('/crear-envio', async (req, res) => {
         if (!envio) {
             return res.status(400).json({
                 success: false,
-                error: 'ENVIO_DATA_REQUIRED'
+                error: 'ENVIO_DATA_REQUIRED',
+                message: 'Se requieren datos del envío'
             });
         }
         
@@ -315,8 +320,70 @@ app.post('/crear-envio', async (req, res) => {
     }
 });
 
-// ... (los otros endpoints se mantienen igual)
+app.post('/login', async (req, res) => {
+    try {
+        const { username, password } = req.body;
+        
+        console.log('🔐 Login request para:', username);
+        
+        if (!username || !password) {
+            return res.status(400).json({
+                success: false,
+                error: 'CREDENTIALS_REQUIRED',
+                message: 'Se requieren usuario y contraseña'
+            });
+        }
+        
+        const token = await getValidToken(username, password);
+        
+        res.json({
+            success: true,
+            access_token: token,
+            expires_in: Math.floor((tokenExpiry - Date.now()) / 1000)
+        });
+        
+    } catch (error) {
+        console.error('❌ Error en login:', error.message);
+        res.status(500).json({
+            success: false,
+            error: 'LOGIN_FAILED',
+            message: error.message
+        });
+    }
+});
 
+app.get('/health', (req, res) => {
+    res.json({
+        status: 'ok',
+        uptime: Math.floor(process.uptime()),
+        token_cached: cachedToken !== null,
+        token_valid: cachedToken && tokenExpiry && Date.now() < tokenExpiry,
+        auth_system: 'Puppeteer + API Pública',
+        note: 'Cotizaciones: API pública | Envíos: Autenticación Puppeteer'
+    });
+});
+
+app.get('/', (req, res) => {
+    res.json({
+        service: 'Andreani Service API',
+        version: '7.0.0 - Puppeteer + API Pública',
+        endpoints: {
+            health: 'GET /health',
+            cotizar: 'POST /cotizar (API pública - sin login)',
+            crear_envio: 'POST /crear-envio (requiere credenciales)',
+            login: 'POST /login (obtener token manual)'
+        },
+        features: {
+            cotizaciones: 'Funcionan sin credenciales',
+            envios: 'Requieren autenticación con Puppeteer',
+            performance: 'Cotizaciones rápidas sin overhead de login'
+        }
+    });
+});
+
+/**
+ * Genera un GUID
+ */
 function generateGuid() {
     return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
         const r = Math.random() * 16 | 0;
@@ -325,6 +392,17 @@ function generateGuid() {
     });
 }
 
+// Manejo de errores no capturados
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (error) => {
+    console.error('❌ Uncaught Exception:', error);
+    process.exit(1);
+});
+
+// Iniciar servidor
 app.listen(PORT, () => {
     console.log(`
 ╔═══════════════════════════════════════╗
@@ -332,6 +410,12 @@ app.listen(PORT, () => {
 ║   📡 Port: ${PORT}                       ║
 ║   ✅ API Pública + Puppeteer Auth     ║
 ║   🎯 Cotizaciones sin login           ║
+║   🤖 Envíos con autenticación real    ║
 ╚═══════════════════════════════════════╝
     `);
+    console.log('📋 Endpoints disponibles:');
+    console.log('   GET  /health      - Estado del servicio');
+    console.log('   POST /cotizar     - Obtener tarifas (API pública)');
+    console.log('   POST /crear-envio - Crear envío (requiere credenciales)');
+    console.log('   POST /login       - Obtener token manual');
 });
