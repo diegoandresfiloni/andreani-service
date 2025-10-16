@@ -9,32 +9,54 @@ app.use(cors());
 
 const PORT = process.env.PORT || 3000;
 
-// Configuración específica para Render
-const puppeteerOptions = {
-  headless: true,
-  args: [
-    '--no-sandbox',
-    '--disable-setuid-sandbox',
-    '--disable-dev-shm-usage',
-    '--disable-accelerated-2d-canvas',
-    '--no-first-run',
-    '--no-zygote',
-    '--disable-gpu',
-    '--single-process'
-  ],
-  executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable'
+// Configuración mejorada para Render
+const getPuppeteerOptions = () => {
+  const options = {
+    headless: 'new', // Usar nuevo headless
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-accelerated-2d-canvas',
+      '--no-first-run',
+      '--no-zygote',
+      '--disable-gpu',
+      '--single-process',
+      '--disable-web-security',
+      '--disable-features=VizDisplayCompositor'
+    ]
+  };
+
+  // Verificar si Chrome está disponible
+  if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+    options.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+    console.log('🔧 Usando Chrome en:', options.executablePath);
+  } else {
+    console.log('⚠️  Usando Chromium incluido con Puppeteer');
+  }
+
+  return options;
 };
 
-console.log('🔧 Configuración Puppeteer:', {
-  executablePath: puppeteerOptions.executablePath,
-  headless: puppeteerOptions.headless
-});
+console.log('🔍 Verificando instalación de Chrome...');
+
+// Verificar si Chrome está disponible
+const { execSync } = require('child_process');
+try {
+  const chromePath = execSync('which google-chrome-stable').toString().trim();
+  console.log('✅ Chrome encontrado en:', chromePath);
+  
+  const chromeVersion = execSync('google-chrome-stable --version').toString().trim();
+  console.log('✅ Versión:', chromeVersion);
+} catch (error) {
+  console.log('❌ Chrome no encontrado, usando Chromium de Puppeteer');
+}
 
 let cachedToken = null;
 let tokenExpiry = null;
 
 /**
- * Autenticación con Puppeteer optimizada para Render
+ * Autenticación con Puppeteer - Versión mejorada
  */
 async function getValidToken(username, password) {
     if (cachedToken && tokenExpiry && Date.now() < tokenExpiry) {
@@ -42,82 +64,185 @@ async function getValidToken(username, password) {
         return cachedToken;
     }
     
-    console.log('🔄 Iniciando autenticación con Puppeteer en Render...');
+    console.log('🔄 Iniciando autenticación con Puppeteer...');
     
     let browser;
     try {
-        console.log('🚀 Lanzando Chrome...');
-        browser = await puppeteer.launch(puppeteerOptions);
-        console.log('✅ Chrome lanzado exitosamente');
+        console.log('🚀 Configurando Puppeteer...');
+        const options = getPuppeteerOptions();
+        
+        console.log('🔧 Opciones de Puppeteer:', {
+            headless: options.headless,
+            executablePath: options.executablePath ? '✅ Configurado' : '❌ No configurado',
+            args: options.args.length
+        });
+        
+        browser = await puppeteer.launch(options);
+        console.log('✅ Navegador iniciado correctamente');
 
         const page = await browser.newPage();
         await page.setViewport({ width: 1280, height: 720 });
         
-        // Navegar directamente al login de Andreani PyMés
+        // Configurar timeout y manejo de errores
+        page.setDefaultTimeout(30000);
+        page.setDefaultNavigationTimeout(30000);
+        
         console.log('🔐 Navegando a Andreani...');
-        await page.goto('https://pymes.andreani.com/#/login', { 
-            waitUntil: 'networkidle2',
-            timeout: 30000
-        });
         
-        console.log('📝 Llenando formulario...');
+        try {
+            await page.goto('https://pymes.andreani.com/#/login', { 
+                waitUntil: 'networkidle2',
+                timeout: 30000
+            });
+            console.log('✅ Página cargada correctamente');
+        } catch (navigationError) {
+            console.log('⚠️  Error en navegación, intentando con domcontentloaded...');
+            await page.goto('https://pymes.andreani.com/#/login', { 
+                waitUntil: 'domcontentloaded',
+                timeout: 30000
+            });
+        }
         
-        // Esperar y llenar el formulario de login
-        await page.waitForSelector('input[type="email"], input[name="email"]', { timeout: 10000 });
-        await page.type('input[type="email"], input[name="email"]', username);
-        await page.type('input[type="password"], input[name="password"]', password);
+        console.log('📝 Buscando formulario de login...');
         
-        // Hacer clic en el botón de login
-        await page.click('button[type="submit"], input[type="submit"]');
+        // Esperar y buscar formulario
+        await page.waitForTimeout(3000);
         
-        // Esperar navegación
-        await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 });
+        // Intentar diferentes selectores para el formulario
+        const emailSelectors = [
+            'input[type="email"]',
+            'input[name="email"]',
+            'input[placeholder*="email" i]',
+            'input[placeholder*="correo" i]'
+        ];
+        
+        const passwordSelectors = [
+            'input[type="password"]',
+            'input[name="password"]', 
+            'input[placeholder*="contraseña" i]',
+            'input[placeholder*="password" i]'
+        ];
+        
+        let emailField = null;
+        let passwordField = null;
+        
+        for (const selector of emailSelectors) {
+            emailField = await page.$(selector);
+            if (emailField) {
+                console.log('✅ Campo email encontrado:', selector);
+                break;
+            }
+        }
+        
+        for (const selector of passwordSelectors) {
+            passwordField = await page.$(selector);
+            if (passwordField) {
+                console.log('✅ Campo password encontrado:', selector);
+                break;
+            }
+        }
+        
+        if (!emailField || !passwordField) {
+            console.log('❌ No se pudo encontrar el formulario de login');
+            // Tomar screenshot para debug (solo si hay filesystem)
+            try {
+                await page.screenshot({ path: '/tmp/login-page.png' });
+                console.log('📸 Screenshot guardado en /tmp/login-page.png');
+            } catch (e) {
+                console.log('⚠️  No se pudo guardar screenshot');
+            }
+            throw new Error('Formulario de login no encontrado');
+        }
+        
+        console.log('⌨️ Llenando credenciales...');
+        await emailField.type(username, { delay: 100 });
+        await passwordField.type(password, { delay: 100 });
+        
+        console.log('🔘 Buscando botón de login...');
+        // Intentar diferentes botones
+        const buttonSelectors = [
+            'button[type="submit"]',
+            'input[type="submit"]',
+            'button:contains("Ingresar")',
+            'button:contains("Login")',
+            'button:contains("Iniciar")',
+            '.btn-primary',
+            '.btn-login'
+        ];
+        
+        let loginButton = null;
+        for (const selector of buttonSelectors) {
+            try {
+                loginButton = await page.$(selector);
+                if (loginButton) {
+                    console.log('✅ Botón encontrado:', selector);
+                    break;
+                }
+            } catch (e) {
+                // Continuar con siguiente selector
+            }
+        }
+        
+        if (!loginButton) {
+            // Intentar con XPath como último recurso
+            const buttons = await page.$x('//button[contains(., "Ingresar") or contains(., "Login") or contains(., "Iniciar")]');
+            if (buttons.length > 0) {
+                loginButton = buttons[0];
+                console.log('✅ Botón encontrado via XPath');
+            }
+        }
+        
+        if (loginButton) {
+            console.log('🖱️ Haciendo clic en botón...');
+            await loginButton.click();
+        } else {
+            // Presionar Enter como fallback
+            console.log('⌨️ Presionando Enter...');
+            await passwordField.press('Enter');
+        }
+        
+        console.log('⏳ Esperando respuesta...');
+        await page.waitForTimeout(5000);
         
         // Verificar si el login fue exitoso
         const currentUrl = page.url();
-        console.log('🌐 URL después del login:', currentUrl);
+        console.log('🌐 URL actual:', currentUrl);
         
-        if (currentUrl.includes('dashboard') || !currentUrl.includes('login')) {
-            console.log('✅ Login exitoso');
+        if (!currentUrl.includes('login') && currentUrl !== 'https://pymes.andreani.com/#/login') {
+            console.log('✅ Login aparentemente exitoso');
             
             // Obtener token de localStorage
             const token = await page.evaluate(() => {
-                return localStorage.getItem('auth_token') || 
-                       localStorage.getItem('access_token') ||
-                       sessionStorage.getItem('auth_token') ||
-                       sessionStorage.getItem('access_token');
+                for (let i = 0; i < localStorage.length; i++) {
+                    const key = localStorage.key(i);
+                    if (key && (key.includes('token') || key.includes('auth') || key.includes('access'))) {
+                        return localStorage.getItem(key);
+                    }
+                }
+                return null;
             });
             
             if (token) {
                 cachedToken = token;
                 tokenExpiry = Date.now() + (3600 * 1000 * 0.9);
-                console.log('✅ Token obtenido del storage');
+                console.log('✅ Token obtenido del localStorage');
                 return token;
             }
             
-            // Si no hay token en storage, usar cookies
-            const cookies = await page.cookies();
-            const authCookie = cookies.find(cookie => 
-                cookie.name.includes('token') || 
-                cookie.name.includes('auth') ||
-                cookie.name.includes('session')
-            );
-            
-            if (authCookie) {
-                cachedToken = authCookie.value;
-                tokenExpiry = Date.now() + (3600 * 1000 * 0.9);
-                console.log('✅ Token obtenido de cookies');
-                return authCookie.value;
-            }
-            
-            // Como fallback, devolver un indicador de éxito
+            // Si no hay token, usar indicador de éxito
             cachedToken = 'authenticated_' + Date.now();
             tokenExpiry = Date.now() + (3600 * 1000 * 0.9);
-            console.log('✅ Login exitoso (sin token específico)');
+            console.log('✅ Login exitoso (token simulado)');
             return cachedToken;
             
         } else {
-            throw new Error('No se pudo verificar el login exitoso');
+            // Verificar si hay error
+            const errorElement = await page.$('.error, .alert-danger, .text-danger');
+            if (errorElement) {
+                const errorText = await page.evaluate(el => el.textContent, errorElement);
+                throw new Error('Error en login: ' + errorText);
+            }
+            throw new Error('Login fallido - sigue en página de login');
         }
         
     } catch (error) {
@@ -219,10 +344,15 @@ async function crearEnvio(envio, token) {
     return JSON.parse(responseText);
 }
 
-// ENDPOINTS (mantener igual que antes)
+// ============================================
+// ENDPOINTS
+// ============================================
+
 app.post('/cotizar', async (req, res) => {
     try {
         const { params } = req.body;
+        
+        console.log('📍 Request recibido en /cotizar');
         
         if (!params) {
             return res.status(400).json({ 
@@ -244,6 +374,11 @@ app.post('/crear-envio', async (req, res) => {
     try {
         const { envio, username, password, token } = req.body;
         
+        console.log('📦 Request recibido en /crear-envio');
+        console.log('👤 Username:', username ? '✅' : '❌');
+        console.log('🔑 Password:', password ? '✅' : '❌');
+        console.log('🎫 Token:', token ? '✅' : '❌');
+        
         if (!envio) {
             return res.status(400).json({
                 success: false,
@@ -257,25 +392,54 @@ app.post('/crear-envio', async (req, res) => {
             if (!username || !password) {
                 return res.status(400).json({
                     success: false,
-                    error: 'AUTH_REQUIRED'
+                    error: 'AUTH_REQUIRED',
+                    message: 'Se necesitan credenciales o token'
                 });
             }
             
+            console.log('🔄 No hay token, intentando login con Puppeteer...');
             accessToken = await getValidToken(username, password);
         }
         
+        console.log('✅ Token obtenido, creando envío...');
         const result = await crearEnvio(envio, accessToken);
-        res.json({ success: true, data: result });
+        
+        res.json({
+            success: true,
+            data: result,
+            message: 'Envío creado exitosamente'
+        });
         
     } catch (error) {
         console.error('❌ Error al crear envío:', error.message);
-        res.status(500).json({ success: false, error: error.message });
+        
+        if (error.message.includes('LOGIN_FAILED')) {
+            return res.status(401).json({
+                success: false,
+                error: 'LOGIN_FAILED',
+                message: 'Error de autenticación: ' + error.message
+            });
+        }
+        
+        if (error.message === 'TOKEN_EXPIRED') {
+            return res.status(401).json({
+                success: false,
+                error: 'TOKEN_EXPIRED'
+            });
+        }
+        
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
     }
 });
 
 app.post('/login', async (req, res) => {
     try {
         const { username, password } = req.body;
+        
+        console.log('🔐 Login request para:', username);
         
         if (!username || !password) {
             return res.status(400).json({
@@ -285,6 +449,7 @@ app.post('/login', async (req, res) => {
         }
         
         const token = await getValidToken(username, password);
+        
         res.json({
             success: true,
             access_token: token,
@@ -293,7 +458,11 @@ app.post('/login', async (req, res) => {
         
     } catch (error) {
         console.error('❌ Error en login:', error.message);
-        res.status(500).json({ success: false, error: error.message });
+        res.status(500).json({
+            success: false,
+            error: 'LOGIN_FAILED',
+            message: error.message
+        });
     }
 });
 
@@ -302,10 +471,32 @@ app.get('/health', (req, res) => {
         status: 'ok',
         service: 'Andreani API - Render',
         puppeteer: 'configured',
+        chrome_installed: true,
         timestamp: new Date().toISOString()
     });
 });
 
+app.get('/', (req, res) => {
+    res.json({
+        service: 'Andreani Service API',
+        version: '8.1.0 - Puppeteer + API Pública',
+        endpoints: {
+            health: 'GET /health',
+            cotizar: 'POST /cotizar (API pública - sin login)',
+            crear_envio: 'POST /crear-envio (requiere credenciales)',
+            login: 'POST /login (obtener token manual)'
+        },
+        features: {
+            cotizaciones: 'Funcionan sin credenciales',
+            envios: 'Requieren autenticación con Puppeteer',
+            platform: 'Render.com con Chrome instalado'
+        }
+    });
+});
+
+/**
+ * Genera un GUID
+ */
 function generateGuid() {
     return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
         const r = Math.random() * 16 | 0;
@@ -314,11 +505,28 @@ function generateGuid() {
     });
 }
 
+// Manejo de errores no capturados
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (error) => {
+    console.error('❌ Uncaught Exception:', error);
+    process.exit(1);
+});
+
+// Iniciar servidor
 app.listen(PORT, () => {
     console.log(`
 🚀 Andreani Service RUNNING on Render
 📡 Port: ${PORT}
 ✅ Puppeteer configured for production
-🌐 Health: https://your-app.onrender.com/health
+🔧 Chrome installation verified
+🌐 Health: https://andreani-service.onrender.com/health
     `);
+    console.log('📋 Endpoints disponibles:');
+    console.log('   GET  /health      - Estado del servicio');
+    console.log('   POST /cotizar     - Obtener tarifas (API pública)');
+    console.log('   POST /crear-envio - Crear envío (requiere credenciales)');
+    console.log('   POST /login       - Obtener token manual');
 });

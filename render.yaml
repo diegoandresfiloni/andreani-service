@@ -5,15 +5,17 @@ services:
     plan: free
     buildCommand: |-
       apt-get update
-      apt-get install -y wget gnupg
+      apt-get install -y wget gnupg libnss3-dev libgconf-2-4 libxss1 libappindicator1 libindicator7
       wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | apt-key add -
-      sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list'
+      echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list
       apt-get update
-      apt-get install -y google-chrome-stable fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg fonts-kacst fonts-freefont-ttf libxss1
+      apt-get install -y google-chrome-stable
+      which google-chrome-stable
+      google-chrome-stable --version
       npm install
     startCommand: npm start
     envVars:
       - key: PUPPETEER_SKIP_CHROMIUM_DOWNLOAD
-        value: "false"
+        value: "true"
       - key: PUPPETEER_EXECUTABLE_PATH
         value: "/usr/bin/google-chrome-stable"
