@@ -1,6 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-const puppeteer = require('puppeteer');
+const { chromium } = require('playwright-core');
 require('dotenv').config();
 
 const app = express();
@@ -14,7 +14,7 @@ let cachedToken = null;
 let tokenExpiry = null;
 
 /**
- * Autenticación con Puppeteer (simula navegador real)
+ * Autenticación liviana con Playwright
  */
 async function getValidToken(username, password) {
     if (cachedToken && tokenExpiry && Date.now() < tokenExpiry) {
@@ -22,72 +22,87 @@ async function getValidToken(username, password) {
         return cachedToken;
     }
     
-    console.log('🔄 Iniciando autenticación con Puppeteer...');
+    console.log('🔄 Autenticación rápida con Playwright...');
     
     let browser;
     try {
-        browser = await puppeteer.launch({
+        // Usar Chromium del sistema o descargar versión mínima
+        browser = await chromium.launch({
             headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas',
+                '--no-first-run',
+                '--no-zygote',
+                '--disable-gpu'
+            ]
         });
         
-        const page = await browser.newPage();
-        
-        // Navegar al portal de Andreani
-        await page.goto('https://onboarding.andreani.com/', { 
-            waitUntil: 'networkidle2',
-            timeout: 30000
+        const context = await browser.newContext({
+            viewport: { width: 1280, height: 720 },
+            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         });
         
-        console.log('🔐 Llenando formulario de login...');
+        const page = await context.newPage();
         
-        // Esperar y llenar el formulario
-        await page.waitForSelector('#signInName', { timeout: 10000 });
-        await page.type('#signInName', username);
-        await page.type('#password', password);
+        // Navegar directamente al endpoint de login de API (si existe)
+        console.log('🔐 Intentando login directo...');
         
-        // Hacer clic en el botón de login
-        await page.click('#next');
+        // PRIMERO: Intentar endpoint directo (más rápido)
+        try {
+            const directToken = await tryDirectLogin(username, password);
+            if (directToken) {
+                cachedToken = directToken;
+                tokenExpiry = Date.now() + (3600 * 1000 * 0.9);
+                console.log('✅ Token obtenido por método directo');
+                return directToken;
+            }
+        } catch (directError) {
+            console.log('⚠️ Método directo falló, usando navegador...');
+        }
         
-        // Esperar a que la redirección termine
-        await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 });
+        // SEGUNDO: Usar navegador como fallback
+        await page.goto('https://pymes.andreani.com/', { 
+            waitUntil: 'domcontentloaded',
+            timeout: 10000
+        });
         
-        // Obtener el token de las cookies o localStorage
-        const tokens = await page.evaluate(() => {
-            // Intentar obtener token de diferentes lugares
-            const localStorageToken = localStorage.getItem('andreani_token');
-            const sessionStorageToken = sessionStorage.getItem('access_token');
+        // Buscar formulario de login rápidamente
+        const loginUrl = await findLoginUrl(page);
+        if (loginUrl) {
+            await page.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 10000 });
             
-            return {
-                localStorage: localStorageToken,
-                sessionStorage: sessionStorageToken,
-                cookies: document.cookie
-            };
-        });
-        
-        console.log('🔍 Tokens encontrados:', tokens);
-        
-        // Extraer token de donde sea que esté
-        let accessToken = tokens.localStorage || tokens.sessionStorage;
-        
-        if (!accessToken) {
-            // Si no encontramos token, intentar obtenerlo de la API directamente
-            accessToken = await extractTokenFromAPI(page);
+            // Intentar llenar formulario rápidamente
+            await page.fill('input[type="email"], input[name="email"], #email', username, { timeout: 5000 });
+            await page.fill('input[type="password"], input[name="password"], #password', password, { timeout: 5000 });
+            await page.click('button[type="submit"], input[type="submit"]', { timeout: 5000 });
+            
+            // Esperar navegación breve
+            await page.waitForTimeout(3000);
+            
+            // Extraer token de cookies
+            const cookies = await context.cookies();
+            const authCookie = cookies.find(cookie => 
+                cookie.name.includes('token') || 
+                cookie.name.includes('auth') ||
+                cookie.name.includes('session')
+            );
+            
+            if (authCookie) {
+                cachedToken = authCookie.value;
+                tokenExpiry = Date.now() + (3600 * 1000 * 0.9);
+                console.log('✅ Token obtenido de cookies');
+                return authCookie.value;
+            }
         }
         
-        if (!accessToken) {
-            throw new Error('No se pudo obtener el token de acceso después del login');
-        }
-        
-        cachedToken = accessToken;
-        tokenExpiry = Date.now() + (3600 * 1000 * 0.9); // 1 hora
-        
-        console.log('✅ Token obtenido exitosamente');
-        return accessToken;
+        throw new Error('No se pudo autenticar');
         
     } catch (error) {
-        console.error('❌ Error en autenticación Puppeteer:', error.message);
-        throw new Error('PUPPETEER_LOGIN_FAILED: ' + error.message);
+        console.error('❌ Error en autenticación:', error.message);
+        throw new Error('AUTH_FAILED: ' + error.message);
     } finally {
         if (browser) {
             await browser.close();
@@ -96,48 +111,71 @@ async function getValidToken(username, password) {
 }
 
 /**
- * Intentar extraer token de llamadas API
+ * Intentar login directo a API
  */
-async function extractTokenFromAPI(page) {
+async function tryDirectLogin(username, password) {
     try {
-        // Escuchar todas las respuestas de red
-        const responses = [];
-        page.on('response', response => {
-            if (response.url().includes('andreani') && 
-                (response.headers()['authorization'] || response.headers()['set-cookie'])) {
-                responses.push({
-                    url: response.url(),
-                    headers: response.headers(),
-                    status: response.status()
+        // Intentar diferentes endpoints posibles
+        const endpoints = [
+            'https://pymes-api.andreani.com/api/v1/Acceso/login',
+            'https://api.andreani.com/login',
+            'https://pymes.andreani.com/api/auth/login'
+        ];
+        
+        for (const endpoint of endpoints) {
+            try {
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ username, password }),
+                    timeout: 5000
                 });
-            }
-        });
-        
-        // Esperar un momento para capturar respuestas
-        await page.waitForTimeout(3000);
-        
-        console.log('📡 Respuestas de API capturadas:', responses.length);
-        
-        // Buscar token en headers
-        for (const response of responses) {
-            if (response.headers.authorization) {
-                const token = response.headers.authorization.replace('Bearer ', '');
-                if (token) return token;
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    return data.access_token || data.token;
+                }
+            } catch (e) {
+                // Continuar con siguiente endpoint
+                continue;
             }
         }
         
         return null;
     } catch (error) {
-        console.error('Error extrayendo token de API:', error);
         return null;
     }
 }
 
 /**
- * ALTERNATIVA: Usar API key pública para cotizaciones (NO requiere login)
+ * Encontrar URL de login
+ */
+async function findLoginUrl(page) {
+    try {
+        // Buscar enlaces de login
+        const loginLinks = await page.$$eval('a', links => 
+            links
+                .filter(link => 
+                    link.textContent.toLowerCase().includes('login') ||
+                    link.textContent.toLowerCase().includes('iniciar') ||
+                    link.href.includes('login')
+                )
+                .map(link => link.href)
+        );
+        
+        return loginLinks[0] || 'https://pymes.andreani.com/#/login';
+    } catch (error) {
+        return 'https://pymes.andreani.com/#/login';
+    }
+}
+
+/**
+ * API pública para cotizaciones (SIN AUTENTICACIÓN)
  */
 async function cotizarConApiPublica(params) {
-    console.log('📤 Usando API pública para cotización...');
+    console.log('📤 Cotización rápida con API pública...');
     
     const apiUrl = 'https://cotizador-api.andreani.com/api/v1/Cotizar';
     
@@ -167,7 +205,8 @@ async function cotizarConApiPublica(params) {
                 'Origin': 'https://pymes.andreani.com',
                 'Referer': 'https://pymes.andreani.com/cotizador'
             },
-            body: JSON.stringify(requestData)
+            body: JSON.stringify(requestData),
+            timeout: 10000
         });
         
         const responseText = await response.text();
@@ -177,21 +216,21 @@ async function cotizarConApiPublica(params) {
         }
         
         const result = JSON.parse(responseText);
-        console.log('✅ Tarifas obtenidas (API pública):', result.length || 0);
+        console.log('✅ Tarifas obtenidas:', result.length || 0);
         
         return result;
         
     } catch (error) {
-        console.error('❌ Error en cotización API pública:', error.message);
+        console.error('❌ Error en cotización:', error.message);
         throw error;
     }
 }
 
 /**
- * Para crear envíos necesitamos token real - usar Puppeteer
+ * Crear envío con token
  */
 async function crearEnvio(envio, token) {
-    console.log('📤 Creando envío en Andreani API...');
+    console.log('📤 Creando envío...');
     
     const response = await fetch('https://pymes-api.andreani.com/api/v1/Envios', {
         method: 'POST',
@@ -200,11 +239,12 @@ async function crearEnvio(envio, token) {
             'Content-Type': 'application/json',
             'Accept': 'application/json'
         },
-        body: JSON.stringify(envio)
+        body: JSON.stringify(envio),
+        timeout: 15000
     });
     
     const responseText = await response.text();
-    console.log('📥 Respuesta crear envío (Status:', response.status, ')');
+    console.log('📥 Respuesta (Status:', response.status, ')');
     
     if (!response.ok) {
         if (response.status === 401) {
@@ -219,34 +259,27 @@ async function crearEnvio(envio, token) {
 }
 
 // ============================================
-// ENDPOINTS COMPLETOS
+// ENDPOINTS (MISMOS)
 // ============================================
 
 app.post('/cotizar', async (req, res) => {
     try {
-        const { params, username, password, token } = req.body;
+        const { params } = req.body;
         
-        console.log('📍 Request recibido en /cotizar');
-        console.log('Username:', username ? '✅' : '❌');
-        console.log('Password:', password ? '✅' : '❌');
-        console.log('Token manual:', token ? '✅' : '❌');
+        console.log('📍 /cotizar - API pública');
         
         if (!params) {
             return res.status(400).json({ 
                 success: false,
-                error: 'PARAMS_REQUIRED',
-                message: 'Parámetros de cotización requeridos' 
+                error: 'PARAMS_REQUIRED'
             });
         }
         
-        // PARA COTIZACIONES: Usar siempre API pública (no requiere login)
-        console.log('🎯 Usando API pública para cotización...');
         const result = await cotizarConApiPublica(params);
         
         res.json({
             success: true,
-            data: result,
-            message: 'Cotización obtenida con API pública'
+            data: result
         });
         
     } catch (error) {
@@ -262,13 +295,12 @@ app.post('/crear-envio', async (req, res) => {
     try {
         const { envio, username, password, token } = req.body;
         
-        console.log('📦 Request recibido en /crear-envio');
+        console.log('📦 /crear-envio');
         
         if (!envio) {
             return res.status(400).json({
                 success: false,
-                error: 'ENVIO_DATA_REQUIRED',
-                message: 'Se requieren datos del envío'
+                error: 'ENVIO_DATA_REQUIRED'
             });
         }
         
@@ -278,12 +310,10 @@ app.post('/crear-envio', async (req, res) => {
             if (!username || !password) {
                 return res.status(400).json({
                     success: false,
-                    error: 'AUTH_REQUIRED',
-                    message: 'Para crear envíos se necesitan credenciales'
+                    error: 'AUTH_REQUIRED'
                 });
             }
             
-            // PARA CREAR ENVÍOS: Usar Puppeteer para autenticación real
             accessToken = await getValidToken(username, password);
         }
         
@@ -291,20 +321,11 @@ app.post('/crear-envio', async (req, res) => {
         
         res.json({
             success: true,
-            data: result,
-            message: 'Envío creado exitosamente'
+            data: result
         });
         
     } catch (error) {
         console.error('❌ Error al crear envío:', error.message);
-        
-        if (error.message.includes('PUPPETEER_LOGIN_FAILED')) {
-            return res.status(401).json({
-                success: false,
-                error: 'LOGIN_FAILED',
-                message: 'Credenciales inválidas o problema de autenticación'
-            });
-        }
         
         if (error.message === 'TOKEN_EXPIRED') {
             return res.status(401).json({
@@ -324,13 +345,12 @@ app.post('/login', async (req, res) => {
     try {
         const { username, password } = req.body;
         
-        console.log('🔐 Login request para:', username);
+        console.log('🔐 /login para:', username);
         
         if (!username || !password) {
             return res.status(400).json({
                 success: false,
-                error: 'CREDENTIALS_REQUIRED',
-                message: 'Se requieren usuario y contraseña'
+                error: 'CREDENTIALS_REQUIRED'
             });
         }
         
@@ -346,8 +366,7 @@ app.post('/login', async (req, res) => {
         console.error('❌ Error en login:', error.message);
         res.status(500).json({
             success: false,
-            error: 'LOGIN_FAILED',
-            message: error.message
+            error: 'LOGIN_FAILED'
         });
     }
 });
@@ -357,33 +376,25 @@ app.get('/health', (req, res) => {
         status: 'ok',
         uptime: Math.floor(process.uptime()),
         token_cached: cachedToken !== null,
-        token_valid: cachedToken && tokenExpiry && Date.now() < tokenExpiry,
-        auth_system: 'Puppeteer + API Pública',
-        note: 'Cotizaciones: API pública | Envíos: Autenticación Puppeteer'
+        memory: process.memoryUsage(),
+        version: '8.0.0 - Liviano'
     });
 });
 
 app.get('/', (req, res) => {
     res.json({
         service: 'Andreani Service API',
-        version: '7.0.0 - Puppeteer + API Pública',
+        version: '8.0.0 - Versión Liviana',
+        performance: 'Optimizado para deploy rápido',
         endpoints: {
-            health: 'GET /health',
-            cotizar: 'POST /cotizar (API pública - sin login)',
-            crear_envio: 'POST /crear-envio (requiere credenciales)',
-            login: 'POST /login (obtener token manual)'
-        },
-        features: {
-            cotizaciones: 'Funcionan sin credenciales',
-            envios: 'Requieren autenticación con Puppeteer',
-            performance: 'Cotizaciones rápidas sin overhead de login'
+            cotizar: 'POST /cotizar (API pública - rápido)',
+            crear_envio: 'POST /crear-envio',
+            login: 'POST /login', 
+            health: 'GET /health'
         }
     });
 });
 
-/**
- * Genera un GUID
- */
 function generateGuid() {
     return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
         const r = Math.random() * 16 | 0;
@@ -392,30 +403,14 @@ function generateGuid() {
     });
 }
 
-// Manejo de errores no capturados
-process.on('unhandledRejection', (reason, promise) => {
-    console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
-});
-
-process.on('uncaughtException', (error) => {
-    console.error('❌ Uncaught Exception:', error);
-    process.exit(1);
-});
-
-// Iniciar servidor
 app.listen(PORT, () => {
     console.log(`
 ╔═══════════════════════════════════════╗
 ║   🚀 Andreani Service RUNNING         ║
-║   📡 Port: ${PORT}                       ║
-║   ✅ API Pública + Puppeteer Auth     ║
-║   🎯 Cotizaciones sin login           ║
-║   🤖 Envíos con autenticación real    ║
+║   📡 Port: ${PORT}                       ║  
+║   ⚡ VERSIÓN LIVIANA - RÁPIDO         ║
+║   🎯 Cotizaciones: API pública        ║
+║   🤖 Envíos: Playwright mínimo        ║
 ╚═══════════════════════════════════════╝
     `);
-    console.log('📋 Endpoints disponibles:');
-    console.log('   GET  /health      - Estado del servicio');
-    console.log('   POST /cotizar     - Obtener tarifas (API pública)');
-    console.log('   POST /crear-envio - Crear envío (requiere credenciales)');
-    console.log('   POST /login       - Obtener token manual');
 });
